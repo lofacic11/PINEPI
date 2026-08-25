@@ -44,7 +44,7 @@ async def lifespan(app: FastAPI):
             await asyncio.wait_for(operation(), timeout=8)
 
 
-app = FastAPI(title="PinePi", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="PinePi", version="0.7.0", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 for api_router in (system.router, scan.router, audit.router, capture.router, training_ap.router):
     app.include_router(api_router)
@@ -84,4 +84,3 @@ async def index(request: Request):
 @app.get("/health")
 async def health() -> dict:
     return {"status": "ok"}
-

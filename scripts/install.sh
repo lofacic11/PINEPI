@@ -17,7 +17,10 @@ if ! id pinepi >/dev/null 2>&1; then
 fi
 
 install -d -o root -g root -m 0755 /opt/pinepi /etc/pinepi
-install -d -o root -g pinepi -m 0750 /var/lib/pinepi/scans /var/lib/pinepi/captures
+install -d -o root -g pinepi -m 0750 \
+  /var/lib/pinepi \
+  /var/lib/pinepi/scans \
+  /var/lib/pinepi/captures
 cp -a "${PROJECT_DIR}/app" "${PROJECT_DIR}/requirements.txt" /opt/pinepi/
 python3 -m venv /opt/pinepi/.venv
 /opt/pinepi/.venv/bin/pip install --upgrade pip
@@ -30,7 +33,7 @@ install -o root -g root -m 0440 "${PROJECT_DIR}/config/pinepi.sudoers" /etc/sudo
 visudo -cf /etc/sudoers.d/pinepi
 install -o root -g root -m 0644 "${PROJECT_DIR}/config/pinepi.service" /etc/systemd/system/pinepi.service
 systemctl daemon-reload
-systemctl enable --now pinepi.service
+systemctl enable pinepi.service
+systemctl restart pinepi.service
 
 echo "PinePi installed. Open http://$(hostname -I | awk '{print $1}'):8000"
-

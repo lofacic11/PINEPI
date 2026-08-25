@@ -59,6 +59,8 @@ sudo ./scripts/install.sh
 
 The installer adds OS dependencies, creates the non-login `pinepi` service user, installs the app in `/opt/pinepi`, installs the root-owned helper and restricted sudo rule, creates persistent storage, and enables `pinepi.service`. Open `http://<raspberry-pi-ip>:8000`.
 
+`/run` is ephemeral and is cleared at boot. The systemd unit creates `/run/pinepi` with `RuntimeDirectory=pinepi` before applying its `ReadWritePaths` sandbox. This keeps runtime PID/config/state files temporary and prevents `status=226/NAMESPACE` failures without weakening `ProtectSystem` or the other service hardening.
+
 Review `config/pinepi.example.toml` before deployment, especially the country code, adapter IDs, and capture limit. Channels 12–13 depend on the adapter, driver, and regulatory domain. Use a unique lab password; the example password is only a development default and is never returned by an API.
 
 Useful commands:
