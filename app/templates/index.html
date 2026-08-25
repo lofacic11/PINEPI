@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#0b1018">
+  <title>PinePi</title>
+  <link rel="stylesheet" href="{{ url_for('static', path='/css/app.css') }}">
+  <script defer src="{{ url_for('static', path='/js/app.js') }}"></script>
+</head>
+<body>
+  <header class="topbar">
+    <div><span class="brand-mark">P</span><strong>PinePi</strong><span class="subtitle">WLAN training appliance</span></div>
+    <span id="connection" class="status-pill muted">Connecting</span>
+  </header>
+  <nav class="tabs" aria-label="Main navigation">
+    <button class="active" data-page="dashboard">Dashboard</button>
+    <button data-page="audit">WLAN Audit</button>
+    <button data-page="capture">Capture</button>
+    <button data-page="ap">Training AP</button>
+  </nav>
+  <main>
+    <div id="notice" class="notice hidden" role="alert"></div>
+
+    <section id="dashboard" class="page active">
+      <div class="metric-grid">
+        <article class="metric"><span>CPU</span><strong id="cpu">—</strong><div class="bar"><i id="cpu-bar"></i></div></article>
+        <article class="metric"><span>RAM</span><strong id="ram">—</strong><div class="bar"><i id="ram-bar"></i></div></article>
+        <article class="metric"><span>Storage</span><strong id="storage">—</strong><div class="bar"><i id="storage-bar"></i></div></article>
+        <article class="metric"><span>Uptime</span><strong id="uptime">—</strong></article>
+      </div>
+      <article class="panel">
+        <div class="panel-title"><div><h2>Wi-Fi adapters</h2><p>Roles are detected at runtime; interface numbers may change.</p></div><button id="refresh-system" class="secondary">Refresh</button></div>
+        <div id="adapters" class="card-grid"><p class="empty">Detecting adapters…</p></div>
+      </article>
+    </section>
+
+    <section id="audit" class="page">
+      <article class="panel">
+        <div class="panel-title"><div><h2>Nearby WLANs</h2><p>Passive scan using the assigned audit adapter.</p></div><div class="actions"><button id="scan-start">Start scan</button><button id="scan-stop" class="danger">Stop scan</button></div></div>
+        <div class="inline-status"><span id="scan-state" class="status-pill muted">Stopped</span><span id="scan-interface">No interface</span><span id="network-count">0 networks</span></div>
+        <div class="table-wrap"><table><thead><tr><th>SSID</th><th>BSSID</th><th>Ch</th><th>Power</th><th>Privacy</th><th>Cipher</th><th>Auth</th><th>Beacons</th><th>Data</th></tr></thead><tbody id="networks"><tr><td colspan="9" class="empty">Start a scan to discover networks.</td></tr></tbody></table></div>
+      </article>
+      <article class="panel"><div class="panel-title"><div><h2>Selected target</h2><p id="target-label">No WLAN selected</p></div><button id="run-audit" class="secondary">Rate security</button></div><div id="audit-result" class="audit-result empty">Choose a network row to inspect its advertised security.</div></article>
+    </section>
+
+    <section id="capture" class="page">
+      <article class="panel">
+        <div class="panel-title"><div><h2>Passive capture</h2><p>Channel locks to the selected target. No active frames are transmitted.</p></div><div class="actions"><button id="capture-start">Start capture</button><button id="capture-stop" class="danger">Stop &amp; save</button></div></div>
+        <div class="capture-grid">
+          <div><span>Status</span><strong id="capture-state">Stopped</strong></div><div><span>Elapsed</span><strong id="capture-elapsed">00:00:00</strong></div>
+          <div><span>Packets</span><strong id="capture-packets">0</strong></div><div><span>Size</span><strong id="capture-size">0 B</strong></div>
+          <div><span>EAPOL</span><strong id="capture-eapol">0</strong></div><div><span>Indicator</span><strong id="handshake">Not detected</strong></div>
+        </div>
+        <p id="capture-file" class="mono">No capture file</p><p id="capture-reason" class="warning"></p>
+        <p class="fine-print">The EAPOL indicator is based on frame count only. It does not validate a complete WPA M1–M4 exchange.</p>
+      </article>
+      <article class="panel"><div class="panel-title"><div><h2>Saved captures</h2><p>PCAPNG files stored on persistent storage.</p></div><button id="refresh-captures" class="secondary">Refresh</button></div><div class="table-wrap"><table><thead><tr><th>Filename</th><th>Size</th><th>Created</th><th>Actions</th></tr></thead><tbody id="captures"></tbody></table></div></article>
+    </section>
+
+    <section id="ap" class="page">
+      <div class="two-column">
+        <article class="panel">
+          <h2>Training AP</h2><p>Create a WPA2 access point for an authorized lab. Passwords are never returned by status APIs.</p>
+          <form id="ap-form">
+            <label>SSID<input id="ap-ssid" maxlength="32" required autocomplete="off"></label>
+            <label>WPA2 training password<input id="ap-password" type="password" minlength="8" maxlength="63" required autocomplete="new-password"></label>
+            <label>2.4 GHz channel<input id="ap-channel" type="number" min="1" max="13" value="6" required></label>
+            <div class="actions"><button type="submit">Start AP</button><button id="ap-stop" type="button" class="danger">Stop AP</button></div>
+          </form>
+        </article>
+        <article class="panel">
+          <h2>AP status</h2><dl class="status-list"><dt>State</dt><dd id="ap-state">Stopped</dd><dt>Interface</dt><dd id="ap-interface">—</dd><dt>Gateway</dt><dd id="ap-gateway">10.42.0.1</dd><dt>Internet uplink</dt><dd id="ap-uplink">—</dd><dt>Forwarding</dt><dd id="ap-forwarding">Disabled</dd><dt>Clients</dt><dd id="ap-client-count">0</dd></dl>
+        </article>
+      </div>
+      <article class="panel"><h2>Connected clients</h2><div class="table-wrap"><table><thead><tr><th>MAC</th><th>Signal</th><th>RX</th><th>TX</th></tr></thead><tbody id="ap-clients"><tr><td colspan="4" class="empty">No connected clients.</td></tr></tbody></table></div><p class="fine-print">Clients can open <code>http://10.42.0.1:8000</code> while connected.</p></article>
+    </section>
+  </main>
+</body>
+</html>
+

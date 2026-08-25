@@ -1,0 +1,24 @@
+[Unit]
+Description=PinePi WLAN training appliance
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pinepi
+Group=pinepi
+WorkingDirectory=/opt/pinepi
+Environment=PINEPI_CONFIG=/etc/pinepi/pinepi.toml
+ExecStart=/opt/pinepi/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000 --no-access-log
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=20
+# sudo must be allowed to execute the narrowly scoped, root-owned helper.
+NoNewPrivileges=false
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/pinepi /run/pinepi
+
+[Install]
+WantedBy=multi-user.target

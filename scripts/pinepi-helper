@@ -1,0 +1,532 @@
+#!/usr/bin/env python3
+"""Restricted privileged operations for PinePi.
+
+This program intentionally exposes a small, enumerated command surface. It never
+executes a shell and validates every web-controlled value again at the privilege
+boundary.
+"""
+from __future__ import annotations
+
+import argparse
+import ipaddress
+import json
+import os
+import re
+import shutil
+import signal
+import subprocess
+import sys
+import time
+import tomllib
+from pathlib import Path
+
+RUN_DIR = Path("/run/pinepi")
+CONFIG_PATH = Path(os.environ.get("PINEPI_CONFIG", "/etc/pinepi/pinepi.toml"))
+IFACE_RE = re.compile(r"^[a-zA-Z0-9_.-]{1,15}$")
+CAPTURE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\.pcapng$")
+MAC_RE = re.compile(r"(?i)^[0-9a-f]{2}(?::[0-9a-f]{2}){5}$")
+
+
+class HelperError(RuntimeError):
+    pass
+
+
+def config() -> dict:
+    raw: dict = {}
+    if CONFIG_PATH.is_file():
+        with CONFIG_PATH.open("rb") as handle:
+            raw = tomllib.load(handle)
+    storage = raw.get("storage", {})
+    ap = raw.get("training_ap", {})
+    return {
+        "scans": Path(storage.get("scan_path", "/var/lib/pinepi/scans")),
+        "captures": Path(storage.get("capture_path", "/var/lib/pinepi/captures")),
+        "address": str(ap.get("address", "10.42.0.1/24")),
+        "gateway": str(ap.get("gateway", "10.42.0.1")),
+        "dhcp_start": str(ap.get("dhcp_start", "10.42.0.20")),
+        "dhcp_end": str(ap.get("dhcp_end", "10.42.0.200")),
+        "country": str(ap.get("country", "AT")).upper(),
+    }
+
+
+CFG = config()
+
+
+def reply(**data: object) -> None:
+    print(json.dumps({"ok": True, **data}, separators=(",", ":")))
+
+
+def run(argv: list[str], *, timeout: float = 10, check: bool = True, input_text: str | None = None) -> subprocess.CompletedProcess:
+    try:
+        result = subprocess.run(argv, input=input_text, text=True, capture_output=True, timeout=timeout, check=False)
+    except FileNotFoundError as exc:
+        raise HelperError(f"Required executable not found: {argv[0]}") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise HelperError(f"Command timed out: {argv[0]}") from exc
+    if check and result.returncode:
+        raise HelperError((result.stderr or result.stdout).strip() or f"{argv[0]} failed")
+    return result
+
+
+def executable(name: str) -> str:
+    path = shutil.which(name)
+    if not path:
+        raise HelperError(f"Required executable not found: {name}")
+    return path
+
+
+def validate_interface(name: str) -> str:
+    if not IFACE_RE.fullmatch(name) or not (Path("/sys/class/net") / name / "wireless").exists():
+        raise HelperError(f"Invalid or missing wireless interface: {name}")
+    return name
+
+
+def validate_storage(path: Path) -> Path:
+    if not path.is_absolute() or path == Path("/"):
+        raise HelperError("Storage path must be an absolute, non-root path")
+    path.mkdir(parents=True, exist_ok=True, mode=0o750)
+    if path.is_symlink():
+        raise HelperError("Storage path may not be a symlink")
+    return path.resolve()
+
+
+def state_path(name: str) -> Path:
+    return RUN_DIR / f"{name}.json"
+
+
+def load_state(name: str) -> dict:
+    try:
+        value = json.loads(state_path(name).read_text())
+        return value if isinstance(value, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def save_state(name: str, value: dict) -> None:
+    RUN_DIR.mkdir(parents=True, exist_ok=True, mode=0o755)
+    temporary = RUN_DIR / f".{name}.{os.getpid()}.tmp"
+    temporary.write_text(json.dumps(value, separators=(",", ":")))
+    os.chmod(temporary, 0o644)
+    os.replace(temporary, state_path(name))
+
+
+def process_alive(pid: object, expected: str) -> bool:
+    try:
+        number = int(pid)
+        cmdline = (Path("/proc") / str(number) / "cmdline").read_bytes().decode(errors="replace")
+        return number > 1 and expected in cmdline
+    except (ValueError, TypeError, OSError):
+        return False
+
+
+def terminate(pid: object, expected: str) -> None:
+    if not process_alive(pid, expected):
+        return
+    number = int(pid)
+    with suppress_oserror():
+        os.killpg(number, signal.SIGTERM)
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline and process_alive(number, expected):
+        time.sleep(0.1)
+    if process_alive(number, expected):
+        with suppress_oserror():
+            os.killpg(number, signal.SIGKILL)
+
+
+class suppress_oserror:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, kind, value, traceback):
+        return kind is not None and issubclass(kind, OSError)
+
+
+def ensure_idle(name: str, expected: str) -> None:
+    state = load_state(name)
+    if state.get("running") and process_alive(state.get("pid"), expected):
+        raise HelperError(f"{name} is already running")
+    if state:
+        state["running"] = False
+        save_state(name, state)
+
+
+def set_monitor(interface: str, channel: int | None = None) -> None:
+    run([executable("ip"), "link", "set", "dev", interface, "down"])
+    run([executable("iw"), "dev", interface, "set", "type", "monitor"])
+    run([executable("ip"), "link", "set", "dev", interface, "up"])
+    if channel is not None:
+        run([executable("iw"), "dev", interface, "set", "channel", str(channel)])
+
+
+def set_managed(interface: str) -> None:
+    if not interface:
+        return
+    run([executable("ip"), "link", "set", "dev", interface, "down"], check=False)
+    run([executable("iw"), "dev", interface, "set", "type", "managed"], check=False)
+    run([executable("ip"), "link", "set", "dev", interface, "up"], check=False)
+
+
+def scan_start(interface: str) -> None:
+    interface = validate_interface(interface)
+    ensure_idle("scan", "airodump-ng")
+    capture = load_state("capture")
+    if capture.get("running") and process_alive(capture.get("pid"), "dumpcap"):
+        raise HelperError("Cannot scan while a capture is running")
+    root = validate_storage(CFG["scans"])
+    for path in root.glob("current*"):
+        if path.is_file() and not path.is_symlink():
+            path.unlink()
+    set_monitor(interface)
+    process = subprocess.Popen(
+        [executable("airodump-ng"), "--write", str(root / "current"), "--output-format", "csv", interface],
+        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
+    )
+    time.sleep(0.35)
+    if process.poll() is not None:
+        raise HelperError("airodump-ng failed to start")
+    state = {"running": True, "pid": process.pid, "interface": interface, "started_at": time.time()}
+    save_state("scan", state)
+    reply(**state)
+
+
+def scan_stop() -> None:
+    state = load_state("scan")
+    terminate(state.get("pid"), "airodump-ng")
+    state.update(running=False, stopped_at=time.time())
+    save_state("scan", state)
+    reply(**state)
+
+
+def scan_status() -> None:
+    state = load_state("scan")
+    running = process_alive(state.get("pid"), "airodump-ng")
+    state["running"] = running
+    if state and not running and "stopped_at" not in state:
+        state["stopped_at"] = time.time()
+        save_state("scan", state)
+    reply(**state)
+
+
+def capture_start(interface: str, channel_text: str, max_mb_text: str) -> None:
+    interface = validate_interface(interface)
+    try:
+        channel, max_mb = int(channel_text), int(max_mb_text)
+    except ValueError as exc:
+        raise HelperError("Channel and size must be integers") from exc
+    if not 1 <= channel <= 196 or not 1 <= max_mb <= 102400:
+        raise HelperError("Channel or maximum capture size is out of range")
+    ensure_idle("capture", "dumpcap")
+    scan = load_state("scan")
+    if scan.get("running") and process_alive(scan.get("pid"), "airodump-ng"):
+        raise HelperError("Stop the scan before starting a capture")
+    root = validate_storage(CFG["captures"])
+    set_monitor(interface, channel)
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    filename = f"capture-{stamp}-{os.getpid()}.pcapng"
+    path = root / filename
+    process = subprocess.Popen(
+        [executable("dumpcap"), "-q", "-i", interface, "-w", str(path), "-a", f"filesize:{max_mb * 1024}"],
+        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
+    )
+    time.sleep(0.5)
+    if process.poll() is not None:
+        raise HelperError("dumpcap failed to start")
+    state = {
+        "running": True, "pid": process.pid, "interface": interface, "channel": channel,
+        "filename": filename, "path": str(path), "started_at": time.time(), "max_bytes": max_mb * 1024 * 1024,
+        "stop_reason": "",
+    }
+    save_state("capture", state)
+    reply(**capture_details(state))
+
+
+def capture_details(state: dict) -> dict:
+    if not state:
+        return {"running": False, "elapsed_seconds": 0, "packet_count": 0, "eapol_frames": 0, "size": 0, "filename": ""}
+    running = process_alive(state.get("pid"), "dumpcap")
+    path = Path(str(state.get("path", "")))
+    size = path.stat().st_size if path.is_file() else 0
+    if not running and state.get("running"):
+        state["running"] = False
+        state["stopped_at"] = time.time()
+        if size >= int(state.get("max_bytes", 0)) * 0.99:
+            state["stop_reason"] = "size limit reached"
+        else:
+            state["stop_reason"] = state.get("stop_reason") or "capture process exited"
+        save_state("capture", state)
+    state["running"] = running
+    end = time.time() if running else float(state.get("stopped_at", state.get("started_at", time.time())))
+    state["elapsed_seconds"] = max(0, int(end - float(state.get("started_at", end))))
+    state["size"] = size
+    state["packet_count"] = packet_count(path)
+    state["eapol_frames"] = eapol_count(path)
+    state.pop("path", None)
+    return state
+
+
+def packet_count(path: Path) -> int:
+    if not path.is_file() or path.stat().st_size == 0:
+        return 0
+    result = run([executable("capinfos"), "-c", str(path)], timeout=20, check=False)
+    match = re.search(r"Number of packets:\s*([\d,]+)", result.stdout)
+    return int(match.group(1).replace(",", "")) if match else 0
+
+
+def eapol_count(path: Path) -> int:
+    if not path.is_file() or path.stat().st_size == 0:
+        return 0
+    result = run(
+        [executable("tshark"), "-n", "-r", str(path), "-Y", "eapol", "-T", "fields", "-e", "frame.number"],
+        timeout=20, check=False,
+    )
+    return sum(1 for line in result.stdout.splitlines() if line.strip())
+
+
+def capture_stop() -> None:
+    state = load_state("capture")
+    terminate(state.get("pid"), "dumpcap")
+    if state:
+        state.update(running=False, stopped_at=time.time(), stop_reason="stopped by user")
+        save_state("capture", state)
+    reply(**capture_details(state))
+
+
+def capture_status() -> None:
+    reply(**capture_details(load_state("capture")))
+
+
+def capture_delete(filename: str) -> None:
+    if not CAPTURE_RE.fullmatch(filename):
+        raise HelperError("Invalid capture filename")
+    state = load_state("capture")
+    if state.get("running") and state.get("filename") == filename and process_alive(state.get("pid"), "dumpcap"):
+        raise HelperError("Cannot delete the active capture")
+    root = validate_storage(CFG["captures"])
+    path = (root / filename).resolve()
+    if path.parent != root or not path.is_file():
+        raise HelperError("Capture not found")
+    path.unlink()
+    reply(deleted=filename)
+
+
+def validate_ap_network() -> None:
+    network = ipaddress.ip_interface(CFG["address"]).network
+    gateway = ipaddress.ip_address(CFG["gateway"])
+    start, end = ipaddress.ip_address(CFG["dhcp_start"]), ipaddress.ip_address(CFG["dhcp_end"])
+    if gateway not in network or start not in network or end not in network or start > end:
+        raise HelperError("Invalid Training AP network configuration")
+    if not re.fullmatch(r"[A-Z]{2}", CFG["country"]):
+        raise HelperError("Invalid country code")
+
+
+def default_uplink(ap_interface: str) -> str:
+    result = run([executable("ip"), "-4", "route", "show", "default"])
+    for line in result.stdout.splitlines():
+        match = re.search(r"\bdev\s+(\S+)", line)
+        if match and IFACE_RE.fullmatch(match.group(1)) and match.group(1) != ap_interface:
+            return match.group(1)
+    raise HelperError("No usable default IPv4 uplink was found")
+
+
+def safe_text(value: str, field: str, minimum: int, maximum: int) -> str:
+    if not minimum <= len(value.encode()) <= maximum or any(ord(char) < 32 or ord(char) == 127 for char in value):
+        raise HelperError(f"Invalid {field}")
+    return value
+
+
+def ap_start(interface: str, channel_text: str) -> None:
+    interface = validate_interface(interface)
+    try:
+        payload = json.loads(sys.stdin.read(4096))
+        if not isinstance(payload, dict):
+            raise ValueError
+        ssid, password = payload["ssid"], payload["password"]
+        if not isinstance(ssid, str) or not isinstance(password, str):
+            raise ValueError
+    except (json.JSONDecodeError, KeyError, ValueError) as exc:
+        raise HelperError("AP settings must be supplied as a valid JSON object") from exc
+    ssid = safe_text(ssid, "SSID", 1, 32)
+    password = safe_text(password, "WPA2 password", 8, 63)
+    try:
+        channel = int(channel_text)
+    except ValueError as exc:
+        raise HelperError("Invalid AP channel") from exc
+    if not 1 <= channel <= 13:
+        raise HelperError("AP channel must be between 1 and 13")
+    validate_ap_network()
+    state = load_state("ap")
+    if state.get("running") and process_alive(state.get("hostapd_pid"), "hostapd"):
+        raise HelperError("Training AP is already running")
+    uplink = default_uplink(interface)
+    RUN_DIR.mkdir(parents=True, exist_ok=True, mode=0o755)
+    hostapd_conf = RUN_DIR / "hostapd.conf"
+    dnsmasq_conf = RUN_DIR / "dnsmasq.conf"
+    hostapd_conf.write_text(
+        f"interface={interface}\ndriver=nl80211\nssid={ssid}\nhw_mode=g\nchannel={channel}\n"
+        f"country_code={CFG['country']}\nieee80211d=1\nwmm_enabled=1\nauth_algs=1\n"
+        f"wpa=2\nwpa_passphrase={password}\nwpa_key_mgmt=WPA-PSK\nrsn_pairwise=CCMP\n"
+    )
+    os.chmod(hostapd_conf, 0o600)
+    dnsmasq_conf.write_text(
+        f"interface={interface}\nbind-interfaces\nlisten-address={CFG['gateway']}\n"
+        f"dhcp-range={CFG['dhcp_start']},{CFG['dhcp_end']},255.255.255.0,12h\n"
+        f"dhcp-option=3,{CFG['gateway']}\ndhcp-option=6,{CFG['gateway']}\ndomain-needed\nbogus-priv\n"
+    )
+    os.chmod(dnsmasq_conf, 0o600)
+    previous_forward = Path("/proc/sys/net/ipv4/ip_forward").read_text().strip()
+    hostapd: subprocess.Popen | None = None
+    dnsmasq: subprocess.Popen | None = None
+    try:
+        run([executable("ip"), "link", "set", "dev", interface, "down"])
+        run([executable("ip"), "addr", "flush", "dev", interface])
+        run([executable("ip"), "addr", "add", CFG["address"], "dev", interface])
+        run([executable("ip"), "link", "set", "dev", interface, "up"])
+        run([executable("sysctl"), "-w", "net.ipv4.ip_forward=1"])
+        nft_cleanup()
+        rules = (
+            "table ip pinepi {\n"
+            " chain forward { type filter hook forward priority filter; policy accept; "
+            f'iifname "{interface}" oifname "{uplink}" accept; '
+            f'iifname "{uplink}" oifname "{interface}" ct state established,related accept; '
+            f'iifname "{interface}" drop; }}\n'
+            " chain postrouting { type nat hook postrouting priority srcnat; policy accept; "
+            f'oifname "{uplink}" ip saddr {ipaddress.ip_interface(CFG["address"]).network} masquerade; }}\n'
+            "}\n"
+        )
+        run([executable("nft"), "-f", "-"], input_text=rules)
+        hostapd = subprocess.Popen([executable("hostapd"), str(hostapd_conf)], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+        time.sleep(0.8)
+        if hostapd.poll() is not None:
+            raise HelperError("hostapd failed to start; check adapter AP support and channel")
+        dnsmasq = subprocess.Popen([executable("dnsmasq"), "--keep-in-foreground", "--conf-file=" + str(dnsmasq_conf)], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+        time.sleep(0.4)
+        if dnsmasq.poll() is not None:
+            raise HelperError("dnsmasq failed to start")
+    except Exception:
+        if dnsmasq is not None:
+            terminate(dnsmasq.pid, "dnsmasq")
+        if hostapd is not None:
+            terminate(hostapd.pid, "hostapd")
+        nft_cleanup()
+        run([executable("ip"), "addr", "flush", "dev", interface], check=False)
+        set_managed(interface)
+        if previous_forward in ("0", "1"):
+            run([executable("sysctl"), "-w", f"net.ipv4.ip_forward={previous_forward}"], check=False)
+        for temporary_config in (hostapd_conf, dnsmasq_conf):
+            with suppress_oserror():
+                temporary_config.unlink()
+        raise
+    state = {
+        "running": True, "interface": interface, "ssid": ssid, "channel": channel, "uplink": uplink,
+        "gateway": CFG["gateway"], "forwarding": True, "hostapd_pid": hostapd.pid,
+        "dnsmasq_pid": dnsmasq.pid, "started_at": time.time(), "previous_forward": previous_forward,
+    }
+    save_state("ap", state)
+    reply(**public_ap_state(state))
+
+
+def nft_cleanup() -> None:
+    nft = shutil.which("nft")
+    if nft:
+        run([nft, "delete", "table", "ip", "pinepi"], check=False)
+
+
+def ap_stop() -> None:
+    state = load_state("ap")
+    terminate(state.get("dnsmasq_pid"), "dnsmasq")
+    terminate(state.get("hostapd_pid"), "hostapd")
+    nft_cleanup()
+    interface = str(state.get("interface", ""))
+    if IFACE_RE.fullmatch(interface) and (Path("/sys/class/net") / interface).exists():
+        run([executable("ip"), "addr", "flush", "dev", interface], check=False)
+        set_managed(interface)
+    if state.get("previous_forward") in ("0", "1"):
+        run([executable("sysctl"), "-w", f"net.ipv4.ip_forward={state['previous_forward']}"], check=False)
+    for temporary_config in (RUN_DIR / "hostapd.conf", RUN_DIR / "dnsmasq.conf"):
+        with suppress_oserror():
+            temporary_config.unlink()
+    state.update(running=False, forwarding=False, stopped_at=time.time())
+    save_state("ap", state)
+    reply(**public_ap_state(state))
+
+
+def clients(interface: str) -> list[dict]:
+    if not interface:
+        return []
+    result = run([executable("iw"), "dev", interface, "station", "dump"], timeout=5, check=False)
+    items: list[dict] = []
+    current: dict | None = None
+    for line in result.stdout.splitlines():
+        match = re.match(r"Station\s+(\S+)", line)
+        if match and MAC_RE.fullmatch(match.group(1)):
+            current = {"mac": match.group(1).upper(), "signal": None, "rx_bytes": 0, "tx_bytes": 0}
+            items.append(current)
+        elif current:
+            key_value = line.strip().split(":", 1)
+            if len(key_value) != 2:
+                continue
+            key, value = key_value[0], key_value[1].strip()
+            number = re.match(r"-?\d+", value)
+            if key == "signal" and number:
+                current["signal"] = int(number.group())
+            elif key in ("rx bytes", "tx bytes") and number:
+                current[key.replace(" ", "_")] = int(number.group())
+    return items
+
+
+def public_ap_state(state: dict) -> dict:
+    running = process_alive(state.get("hostapd_pid"), "hostapd") and process_alive(state.get("dnsmasq_pid"), "dnsmasq")
+    if state.get("running") and not running:
+        state.update(running=False, forwarding=False, stopped_at=time.time())
+        nft_cleanup()
+        save_state("ap", state)
+    result = {key: value for key, value in state.items() if key not in {"previous_forward", "hostapd_pid", "dnsmasq_pid"}}
+    result["running"] = running
+    result["forwarding"] = bool(running and state.get("forwarding"))
+    result["clients"] = clients(str(state.get("interface", ""))) if running else []
+    result["client_count"] = len(result["clients"])
+    return result
+
+
+def ap_status() -> None:
+    state = load_state("ap")
+    if not state:
+        state = {"running": False, "forwarding": False, "gateway": CFG["gateway"], "clients": [], "client_count": 0}
+    reply(**public_ap_state(state))
+
+
+def parser() -> argparse.ArgumentParser:
+    value = argparse.ArgumentParser(description="PinePi restricted privileged helper")
+    commands = value.add_subparsers(dest="action", required=True)
+    scan = commands.add_parser("scan-start"); scan.add_argument("interface")
+    commands.add_parser("scan-stop"); commands.add_parser("scan-status")
+    capture = commands.add_parser("capture-start"); capture.add_argument("interface"); capture.add_argument("channel"); capture.add_argument("max_mb")
+    commands.add_parser("capture-stop"); commands.add_parser("capture-status")
+    delete = commands.add_parser("capture-delete"); delete.add_argument("filename")
+    ap = commands.add_parser("ap-start"); ap.add_argument("interface"); ap.add_argument("channel")
+    commands.add_parser("ap-stop"); commands.add_parser("ap-status")
+    return value
+
+
+def main() -> int:
+    if os.geteuid() != 0:
+        raise HelperError("pinepi-helper must run as root (normally through restricted sudo)")
+    args = parser().parse_args()
+    actions = {
+        "scan-start": lambda: scan_start(args.interface), "scan-stop": scan_stop, "scan-status": scan_status,
+        "capture-start": lambda: capture_start(args.interface, args.channel, args.max_mb),
+        "capture-stop": capture_stop, "capture-status": capture_status,
+        "capture-delete": lambda: capture_delete(args.filename),
+        "ap-start": lambda: ap_start(args.interface, args.channel),
+        "ap-stop": ap_stop, "ap-status": ap_status,
+    }
+    actions[args.action]()
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except HelperError as exc:
+        print(json.dumps({"ok": False, "error": str(exc)}, separators=(",", ":")), file=sys.stderr)
+        raise SystemExit(1)

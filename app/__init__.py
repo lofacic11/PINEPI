@@ -1,0 +1,2 @@
+"""PinePi web application."""
+

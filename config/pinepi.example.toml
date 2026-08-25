@@ -1,0 +1,28 @@
+[storage]
+# Persistent storage only; do not place scans or captures on /tmp tmpfs.
+scan_path = "/var/lib/pinepi/scans"
+capture_path = "/var/lib/pinepi/captures"
+# Common values: 500, 1024, or 5120.
+max_capture_mb = 1024
+
+[training_ap]
+subnet = "10.42.0.0/24"
+address = "10.42.0.1/24"
+gateway = "10.42.0.1"
+dhcp_start = "10.42.0.20"
+dhcp_end = "10.42.0.200"
+country = "AT"
+# Development convenience only. The UI does not expose this value.
+default_password = "pinepi-lab"
+
+[adapters]
+management_interfaces = ["wlan0"]
+audit_usb_ids = ["0bda:8813"]
+ap_usb_ids = ["148f:5572"]
+
+[runtime]
+helper = "/usr/local/sbin/pinepi-helper"
+sudo = true
+command_timeout = 12.0
+status_cache_seconds = 2.0
+
