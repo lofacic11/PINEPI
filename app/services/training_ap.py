@@ -11,11 +11,14 @@ class TrainingAPService:
         self.config, self.helper, self.processes = config, helper, processes
 
     async def start(self, ssid: str, password: str, channel: int) -> dict:
-        interface = interface_for_role(await detect_adapters(self.config), "training_ap")
+        adapters = await detect_adapters(self.config)
+        interface = interface_for_role(adapters, "training_ap")
+        excluded = excluded_uplink_interfaces(adapters, interface)
         return await self.processes.run(
             "training-ap",
             lambda: self.helper.call(
-                "ap-start", interface, str(channel), payload={"ssid": ssid, "password": password}
+                "ap-start", interface, str(channel), ",".join(sorted(excluded)),
+                payload={"ssid": ssid, "password": password},
             ),
         )
 
@@ -24,5 +27,16 @@ class TrainingAPService:
 
     async def status(self) -> dict:
         status = await self.helper.call("ap-status")
+        for secret in ("password", "passphrase", "wpa_passphrase"):
+            status.pop(secret, None)
         status.setdefault("gateway", self.config.ap.gateway)
         return status
+
+
+def excluded_uplink_interfaces(adapters: list[dict], training_interface: str) -> set[str]:
+    excluded_roles = {"management", "audit", "training_ap"}
+    return {
+        str(adapter["interface"])
+        for adapter in adapters
+        if adapter.get("role") in excluded_roles
+    } | {training_interface}

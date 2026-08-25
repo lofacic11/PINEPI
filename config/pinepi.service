@@ -2,6 +2,8 @@
 Description=PinePi WLAN training appliance
 After=network-online.target
 Wants=network-online.target
+Wants=pinepi-management-ap.service
+After=pinepi-management-ap.service
 
 [Service]
 Type=simple

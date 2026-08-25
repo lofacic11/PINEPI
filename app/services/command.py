@@ -39,6 +39,12 @@ async def run_command(
     result = CommandResult(stdout.decode(errors="replace"), stderr.decode(errors="replace"), process.returncode)
     if check and result.returncode:
         message = result.stderr.strip() or result.stdout.strip() or f"exit status {result.returncode}"
+        try:
+            error_payload = json.loads(message)
+            if isinstance(error_payload, dict) and error_payload.get("error"):
+                message = str(error_payload["error"])
+        except json.JSONDecodeError:
+            pass
         raise CommandError(message)
     return result
 

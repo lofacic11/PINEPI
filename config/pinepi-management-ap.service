@@ -1,0 +1,24 @@
+[Unit]
+Description=PinePi permanent management Wi-Fi
+After=network-pre.target NetworkManager.service
+Before=pinepi.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+Environment=PINEPI_CONFIG=/etc/pinepi/pinepi.toml
+ExecStart=/usr/local/sbin/pinepi-helper management-start
+ExecStop=/usr/local/sbin/pinepi-helper management-stop
+TimeoutStartSec=20
+TimeoutStopSec=20
+RuntimeDirectory=pinepi
+RuntimeDirectoryMode=0755
+RuntimeDirectoryPreserve=yes
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/run/pinepi
+
+[Install]
+WantedBy=multi-user.target

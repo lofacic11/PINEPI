@@ -30,6 +30,18 @@
         <article class="metric"><span>Uptime</span><strong id="uptime">—</strong></article>
       </div>
       <article class="panel">
+        <div class="panel-title"><div><h2>Management Network</h2><p>Permanent control network on the Raspberry Pi internal Wi-Fi.</p></div><span id="management-state" class="status-pill muted">Checking</span></div>
+        <div class="capture-grid management-grid">
+          <div><span>SSID</span><strong id="management-ssid">—</strong></div>
+          <div><span>Interface</span><strong id="management-interface">—</strong></div>
+          <div><span>Gateway</span><strong id="management-gateway">10.43.0.1</strong></div>
+          <div><span>Channel</span><strong id="management-channel">—</strong></div>
+          <div><span>Clients</span><strong id="management-clients">0</strong></div>
+          <div><span>Web UI</span><strong><a id="management-url" href="http://10.43.0.1:8000">10.43.0.1:8000</a></strong></div>
+        </div>
+        <p id="management-error" class="warning"></p>
+      </article>
+      <article class="panel">
         <div class="panel-title"><div><h2>Wi-Fi adapters</h2><p>Roles are detected at runtime; interface numbers may change.</p></div><button id="refresh-system" class="secondary">Refresh</button></div>
         <div id="adapters" class="card-grid"><p class="empty">Detecting adapters…</p></div>
       </article>
@@ -70,7 +82,7 @@
           </form>
         </article>
         <article class="panel">
-          <h2>AP status</h2><dl class="status-list"><dt>State</dt><dd id="ap-state">Stopped</dd><dt>Interface</dt><dd id="ap-interface">—</dd><dt>Gateway</dt><dd id="ap-gateway">10.42.0.1</dd><dt>Internet uplink</dt><dd id="ap-uplink">—</dd><dt>Forwarding</dt><dd id="ap-forwarding">Disabled</dd><dt>Clients</dt><dd id="ap-client-count">0</dd></dl>
+          <h2>AP status</h2><dl class="status-list"><dt>State</dt><dd id="ap-state">Stopped</dd><dt>Interface</dt><dd id="ap-interface">—</dd><dt>Gateway</dt><dd id="ap-gateway">10.42.0.1</dd><dt>Internet uplink</dt><dd id="ap-uplink">—</dd><dt>Forwarding</dt><dd id="ap-forwarding">Disabled</dd><dt>Clients</dt><dd id="ap-client-count">0</dd><dt>Last error</dt><dd id="ap-error">—</dd></dl>
         </article>
       </div>
       <article class="panel"><h2>Connected clients</h2><div class="table-wrap"><table><thead><tr><th>MAC</th><th>Signal</th><th>RX</th><th>TX</th></tr></thead><tbody id="ap-clients"><tr><td colspan="4" class="empty">No connected clients.</td></tr></tbody></table></div><p class="fine-print">Clients can open <code>http://10.42.0.1:8000</code> while connected.</p></article>
@@ -78,4 +90,3 @@
   </main>
 </body>
 </html>
-

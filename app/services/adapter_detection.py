@@ -16,6 +16,8 @@ class Adapter:
     driver: str = "unknown"
     usb_id: str = ""
     mac: str = ""
+    device_path: str = ""
+    is_internal: bool = False
     supports_ap: bool = False
     supports_monitor: bool = False
     role: str = "unassigned"
@@ -46,6 +48,22 @@ def _driver(device: Path) -> str:
         return "unknown"
 
 
+def _device_path(device: Path) -> str:
+    try:
+        return str(device.resolve())
+    except OSError:
+        return ""
+
+
+def _is_internal(device_path: str, driver: str, usb_id: str, config: AppConfig) -> bool:
+    if usb_id:
+        return False
+    path = device_path.lower()
+    return driver.lower() in config.adapters.management_drivers or any(
+        marker in path for marker in ("/platform/", "/mmc", "/soc/")
+    )
+
+
 async def _capabilities(phy: str) -> tuple[bool, bool]:
     if not phy:
         return False, False
@@ -61,10 +79,18 @@ async def _capabilities(phy: str) -> tuple[bool, bool]:
 
 def _assign_roles(adapters: list[Adapter], config: AppConfig) -> None:
     assigned: set[str] = set()
-    for item in adapters:
-        if item.interface in config.adapters.management_interfaces:
-            item.role, item.role_reason = "management", "Configured management interface"
-            assigned.add(item.interface)
+    internal = next((item for item in adapters if item.is_internal), None)
+    named = next(
+        (item for item in adapters if item.interface in config.adapters.management_interfaces and not item.usb_id),
+        None,
+    )
+    management = internal or named
+    if management:
+        management.role = "management"
+        management.role_reason = (
+            "Detected internal non-USB WLAN" if internal else "Configured non-USB management interface"
+        )
+        assigned.add(management.interface)
 
     def choose(role: str, usb_ids: tuple[str, ...], capability: str) -> None:
         candidates = [item for item in adapters if item.interface not in assigned]
@@ -98,7 +124,9 @@ async def detect_adapters(config: AppConfig) -> list[dict]:
             driver=_driver(device),
             usb_id=_usb_id(device),
             mac=_read(interface / "address"),
+            device_path=_device_path(device),
         )
+        item.is_internal = _is_internal(item.device_path, item.driver, item.usb_id, config)
         item.supports_ap, item.supports_monitor = await _capabilities(phy)
         items.append(item)
     _assign_roles(items, config)
@@ -110,4 +138,3 @@ def interface_for_role(adapters: list[dict], role: str) -> str:
     if not match:
         raise RuntimeError(f"No Wi-Fi adapter is available for the {role} role")
     return str(match)
-

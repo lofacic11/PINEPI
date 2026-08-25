@@ -2,6 +2,7 @@ from pathlib import Path
 
 
 UNIT_PATH = Path(__file__).parents[1] / "config" / "pinepi.service"
+MANAGEMENT_UNIT_PATH = Path(__file__).parents[1] / "config" / "pinepi-management-ap.service"
 
 
 def directives() -> list[str]:
@@ -34,3 +35,12 @@ def test_production_working_directory_and_virtualenv_are_preserved():
         line.startswith("ExecStart=/opt/pinepi/.venv/bin/uvicorn ")
         for line in unit
     )
+
+
+def test_management_unit_preserves_runtime_directory_fix():
+    unit = MANAGEMENT_UNIT_PATH.read_text().splitlines()
+    assert unit.count("RuntimeDirectory=pinepi") == 1
+    assert unit.count("RuntimeDirectoryMode=0755") == 1
+    assert unit.count("RuntimeDirectoryPreserve=yes") == 1
+    assert "ReadWritePaths=/run/pinepi" in unit
+    assert "ExecStart=/usr/local/sbin/pinepi-helper management-start" in unit

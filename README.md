@@ -20,6 +20,23 @@ Browser (desktop/mobile)
 
 The helper tracks process IDs under `/run/pinepi`, verifies the expected executable through `/proc`, rejects duplicate processes, notices stale processes, and applies timeouts at the web/helper boundary. Scan and capture files live under `/var/lib/pinepi`, never `/tmp`.
 
+## Network topology
+
+```text
+phone/laptop                 authorized training clients
+     |                                  |
+Management Wi-Fi                     RT5572
+     |                           Training AP 10.42.0.1
+internal Raspberry Pi WLAN                 |
+10.43.0.1                                  +-- PinePi NAT -- eth0 -- Internet
+     |
+PinePi UI http://10.43.0.1:8000
+
+RTL8814AU (0bda:8813) -> monitor mode, scan, and passive capture
+```
+
+The internal non-USB WLAN is reserved for permanent management access. It starts at boot and does not provide Internet forwarding. The RT5572 remains the Training AP, while the RTL8814AU remains the audit adapter. Training NAT excludes all three Wi-Fi role interfaces and uses an eligible default uplink such as `eth0`; without one, the Training AP still provides DHCP and local PinePi access with forwarding shown as disabled.
+
 ## Adapter roles
 
 PinePi does not assume `wlan1` and `wlan2` are stable. At runtime it inspects:
@@ -28,6 +45,8 @@ PinePi does not assume `wlan1` and `wlan2` are stable. At runtime it inspects:
 - sysfs driver, MAC address, and parent USB vendor/product IDs;
 - `iw phy` AP and monitor-mode capabilities.
 
+Internal WLAN detection prefers a non-USB `brcmfmac`/platform/MMC device rather than assuming it is always `wlan0`. Interface names remain configurable fallbacks.
+
 The default mapping prefers `0bda:8813` (RTL8814AU/AWUS1900 class) for audit/monitor use and `148f:5572` (RT5572) for the Training AP. Capability-based fallback is used when a preferred ID is absent. The Dashboard shows the resulting role and reason. Operations return a readable error if the required adapter is missing.
 
 Edit `/etc/pinepi/pinepi.toml` to add another USB ID. A stable per-device MAC rule can be added to the detector later without changing API or UI code.
@@ -35,6 +54,7 @@ Edit `/etc/pinepi/pinepi.toml` to add another USB ID. A stable per-device MAC ru
 ## Features
 
 - Responsive dark dashboard with CPU, RAM, root-storage usage, uptime, adapter mode, connection, channel, and TX power.
+- Boot-managed WPA2 management network with status, client count, and a stable local UI address.
 - Passive `airodump-ng` scan with structured access-point data and backend target selection.
 - Modular passive rating (`app/services/audit.py`) with deliberately limited claims.
 - Channel-locked `dumpcap` PCAPNG capture, frozen stop time, live packet/size/EAPOL counts, safe download/delete, and a configured file-size stop condition.
@@ -59,9 +79,13 @@ sudo ./scripts/install.sh
 
 The installer adds OS dependencies, creates the non-login `pinepi` service user, installs the app in `/opt/pinepi`, installs the root-owned helper and restricted sudo rule, creates persistent storage, and enables `pinepi.service`. Open `http://<raspberry-pi-ip>:8000`.
 
+The installer disables the distribution-wide `dnsmasq.service` and `hostapd.service`; PinePi runs dedicated, interface-bound instances instead. Management and Training use separate configs, PID files, lease files, state, and logs under `/run/pinepi/management` and `/run/pinepi/training`.
+
 `/run` is ephemeral and is cleared at boot. The systemd unit creates `/run/pinepi` with `RuntimeDirectory=pinepi` before applying its `ReadWritePaths` sandbox. This keeps runtime PID/config/state files temporary and prevents `status=226/NAMESPACE` failures without weakening `ProtectSystem` or the other service hardening.
 
 Review `config/pinepi.example.toml` before deployment, especially the country code, adapter IDs, and capture limit. Channels 12–13 depend on the adapter, driver, and regulatory domain. Use a unique lab password; the example password is only a development default and is never returned by an API.
+
+Change the example `[management_ap]` password before exposing the appliance. Management defaults to `10.43.0.1/24`, deliberately separate from Training AP subnet `10.42.0.0/24`.
 
 Useful commands:
 
@@ -136,6 +160,10 @@ This project is suitable only for networks you own or have explicit permission t
 **Capture remains at zero:** check `dumpcap -D`, interface permissions/driver state, free space with `df -h /var/lib/pinepi`, and whether the selected channel is correct.
 
 **Web API reports sudo failure:** validate the installed policy with `sudo visudo -cf /etc/sudoers.d/pinepi` and ensure `/usr/local/sbin/pinepi-helper` is root-owned and not writable by `pinepi`.
+
+**dnsmasq failed to start:** PinePi now returns the daemon's actual startup reason and retains its runtime log under `/run/pinepi/<management|training>/dnsmasq.log`. Check `journalctl -u pinepi-management-ap.service -n 50`, `ss -lntup`, `ps aux | grep '[d]nsmasq'`, `ip addr`, and `iw dev`. A distribution or NetworkManager dnsmasq bound to all addresses must be disabled; PinePi instances bind only their assigned interface/gateway and use separate PID and lease files.
+
+**Management network is stopped:** check `systemctl status pinepi-management-ap.service` and its journal. Confirm the internal adapter appears in `iw dev`, uses `brcmfmac` or another configured management driver, and is not blocked by rfkill. Management AP failure does not prevent the PinePi web service from starting on other available interfaces.
 
 ## Planned extensions
 
