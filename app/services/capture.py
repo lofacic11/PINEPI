@@ -19,20 +19,35 @@ class CaptureService:
         self.config, self.helper, self.processes = config, helper, processes
         self._cache: tuple[float, dict] | None = None
         self._lock = asyncio.Lock()
+        self._operation_id: str | None = None
 
     async def start(self, channel: int) -> dict:
         if not 1 <= channel <= 196:
             raise ValueError("Invalid channel")
         interface = interface_for_role(await detect_adapters(self.config), "audit")
         self._cache = None
-        return await self.processes.run(
-            "capture",
-            lambda: self.helper.call("capture-start", interface, str(channel), str(self.config.storage.max_capture_mb)),
-        )
+        async def operation() -> dict:
+            operation_id = await self.processes.acquire("capture", "audit_adapter")
+            try:
+                result = await self.helper.call("capture-start", interface, str(channel), str(self.config.storage.max_capture_mb))
+                self._operation_id = operation_id
+                self.processes.attach_pid(operation_id, result.get("pid"))
+                result["operation_id"] = operation_id
+                return result
+            except Exception as exc:
+                self.processes.finish(operation_id, "failed", str(exc))
+                raise
+        return await self.processes.run("capture-start", operation)
 
     async def stop(self) -> dict:
         self._cache = None
-        return await self.processes.run("capture", lambda: self.helper.call("capture-stop"))
+        async def operation() -> dict:
+            result = await self.helper.call("capture-stop")
+            if self._operation_id:
+                self.processes.finish(self._operation_id)
+                self._operation_id = None
+            return result
+        return await self.processes.run("capture-stop", operation)
 
     async def status(self) -> dict:
         now = time.monotonic()
@@ -45,6 +60,9 @@ class CaptureService:
                 "Not detected" if frames == 0 else "EAPOL detected" if frames < 4 else "Likely complete"
             )
             status["handshake_note"] = "Frame count is only an indicator; it does not validate an M1-M4 exchange."
+            if not status.get("running") and self._operation_id:
+                self.processes.finish(self._operation_id, "completed")
+                self._operation_id = None
             self._cache = (time.monotonic(), status)
             return status
 
@@ -73,4 +91,3 @@ class CaptureService:
     async def delete(self, filename: str) -> dict:
         self.resolve(filename)
         return await self.helper.call("capture-delete", filename)
-

@@ -1,92 +1,17 @@
-<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-  <meta name="theme-color" content="#0b1018">
-  <title>PinePi</title>
-  <link rel="stylesheet" href="{{ url_for('static', path='/css/app.css') }}">
-  <script defer src="{{ url_for('static', path='/js/app.js') }}"></script>
-</head>
-<body>
-  <header class="topbar">
-    <div><span class="brand-mark">P</span><strong>PinePi</strong><span class="subtitle">WLAN training appliance</span></div>
-    <span id="connection" class="status-pill muted">Connecting</span>
-  </header>
-  <nav class="tabs" aria-label="Main navigation">
-    <button class="active" data-page="dashboard">Dashboard</button>
-    <button data-page="audit">WLAN Audit</button>
-    <button data-page="capture">Capture</button>
-    <button data-page="ap">Training AP</button>
-  </nav>
-  <main>
-    <div id="notice" class="notice hidden" role="alert"></div>
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#08111c"><title>PinePi</title><link rel="stylesheet" href="{{ url_for('static',path='/css/app.css') }}"><script defer src="{{ url_for('static',path='/js/app.js') }}"></script></head><body><a class="skip" href="#content">Skip to content</a>
+<header class="topbar"><div class="brand"><b>P</b><span><strong>PinePi</strong><small>Recon Foundation <i id="header-version"></i></small></span></div><div class="header-actions"><label class="mode">Guided <input id="expert-mode" type="checkbox" role="switch" aria-label="Expert Mode"><i></i> Expert</label><span id="connection" class="pill muted">Connecting</span></div></header>
+<nav class="nav" aria-label="Primary"><button class="active" data-page="dashboard">Dashboard</button><button data-page="recon">Recon</button><button data-page="audits">Audits</button><button data-page="captures-page">Captures</button><button data-page="training">Training</button><button data-page="reports">Reports</button><button data-page="settings">Settings</button></nav>
+<main id="content"><div id="notice" class="notice hidden" role="status" aria-live="polite"></div>
+<section id="dashboard" class="page active"><div class="page-head"><div><p class="eyebrow">System overview</p><h1>Dashboard</h1><p>Live health, adapters, and current operations.</p></div><button id="refresh-dashboard" class="secondary">Refresh</button></div><div id="mock-banner" class="banner warning hidden">Simulated development data — no radio observations are being reported.</div>
+<div class="metrics"><article><span>CPU</span><strong id="cpu">—</strong><i class="bar"><b id="cpu-bar"></b></i></article><article><span>Temperature</span><strong id="temperature">—</strong></article><article><span>Storage</span><strong id="storage">—</strong><i class="bar"><b id="storage-bar"></b></i></article><article><span>Uptime</span><strong id="uptime">—</strong></article></div>
+<div class="columns"><article class="panel"><div class="panel-title"><div><h2>Management Network</h2><p>Permanent local control access.</p></div><span id="management-state" class="pill muted">Checking</span></div><dl><dt>SSID</dt><dd id="management-ssid">—</dd><dt>Interface</dt><dd id="management-interface">—</dd><dt>Gateway</dt><dd id="management-gateway">—</dd><dt>Channel</dt><dd id="management-channel">—</dd><dt>Clients</dt><dd id="management-clients">0</dd><dt>Web UI</dt><dd><a id="management-url" href="#">—</a></dd></dl><details id="management-error-wrap" class="technical hidden"><summary>Technical error</summary><pre id="management-error"></pre></details></article><article class="panel"><h2>Recent Recon</h2><div class="stats"><div><strong id="recon-ap-count">0</strong><span>Access points</span></div><div><strong id="recon-client-count">0</strong><span>Stations</span></div><div><strong id="recon-warning-count">0</strong><span>Warnings</span></div></div><p id="recon-recent-state">No sessions yet.</p><button data-goto="recon">Open Recon</button></article></div>
+<article class="panel"><h2>Wi-Fi adapters</h2><p>Roles are assigned dynamically from hardware identity.</p><div id="adapters" class="cards"><div class="loading">Detecting adapters…</div></div></article><div class="columns"><article class="panel"><h2>Current operations</h2><div id="current-operations" class="list empty">No active operation.</div></article><article class="panel"><h2>Recent operation history</h2><div id="operation-history" class="list empty">No history.</div></article></div></section>
 
-    <section id="dashboard" class="page active">
-      <div class="metric-grid">
-        <article class="metric"><span>CPU</span><strong id="cpu">—</strong><div class="bar"><i id="cpu-bar"></i></div></article>
-        <article class="metric"><span>RAM</span><strong id="ram">—</strong><div class="bar"><i id="ram-bar"></i></div></article>
-        <article class="metric"><span>Storage</span><strong id="storage">—</strong><div class="bar"><i id="storage-bar"></i></div></article>
-        <article class="metric"><span>Uptime</span><strong id="uptime">—</strong></article>
-      </div>
-      <article class="panel">
-        <div class="panel-title"><div><h2>Management Network</h2><p>Permanent control network on the Raspberry Pi internal Wi-Fi.</p></div><span id="management-state" class="status-pill muted">Checking</span></div>
-        <div class="capture-grid management-grid">
-          <div><span>SSID</span><strong id="management-ssid">—</strong></div>
-          <div><span>Interface</span><strong id="management-interface">—</strong></div>
-          <div><span>Gateway</span><strong id="management-gateway">10.43.0.1</strong></div>
-          <div><span>Channel</span><strong id="management-channel">—</strong></div>
-          <div><span>Clients</span><strong id="management-clients">0</strong></div>
-          <div><span>Web UI</span><strong><a id="management-url" href="http://10.43.0.1:8000">10.43.0.1:8000</a></strong></div>
-        </div>
-        <p id="management-error" class="warning"></p>
-      </article>
-      <article class="panel">
-        <div class="panel-title"><div><h2>Wi-Fi adapters</h2><p>Roles are detected at runtime; interface numbers may change.</p></div><button id="refresh-system" class="secondary">Refresh</button></div>
-        <div id="adapters" class="card-grid"><p class="empty">Detecting adapters…</p></div>
-      </article>
-    </section>
+<section id="recon" class="page"><div class="page-head"><div><p class="eyebrow">Passive observation</p><h1>Recon</h1><p>Discover nearby access points and stations.</p></div><div class="actions"><button id="scan-start">Start Scan</button><button id="scan-stop" class="danger">Stop Scan</button></div></div><div id="recon-status" class="banner">No active scan.</div><article class="panel filters"><label>Search<input id="recon-search" type="search" placeholder="SSID, BSSID, vendor"></label><label>Band<select id="filter-band"><option value="">All</option><option>2.4 GHz</option><option>5 GHz</option><option>other</option></select></label><label>Security<select id="filter-security"><option value="">All</option><option>Open</option><option>WEP</option><option>WPA</option><option>WPA2</option><option>WPA3</option><option>Unknown</option></select></label><label>SSID<select id="filter-hidden"><option value="">All</option><option value="false">Named</option><option value="true">Hidden</option></select></label><label>PMF<select id="filter-pmf"><option value="">All</option><option>enabled</option><option>disabled</option><option>unknown</option></select></label><label>Visibility<select id="filter-visible"><option value="">All observations</option><option value="true">Currently visible</option><option value="false">Previously visible</option></select></label><label>Clients<select id="filter-clients"><option value="">Any</option><option value="true">Observed</option><option value="false">None</option></select></label><label>Min signal (dBm)<input id="filter-min-signal" type="number" min="-120" max="0" placeholder="-80"></label><label>Max signal (dBm)<input id="filter-max-signal" type="number" min="-120" max="0" placeholder="-40"></label><label>Sort<select id="recon-sort"><option value="signal_desc">Strongest</option><option value="signal_asc">Weakest</option><option value="ssid">SSID</option><option value="channel">Channel</option><option value="security">Security</option><option value="clients">Clients</option><option value="first_seen">First seen</option><option value="last_seen">Last seen</option></select></label></article>
+<div class="subtabs"><button class="active" data-view="aps">Access points</button><button data-view="clients">Stations</button><button data-view="channels">Channels</button><button data-view="sessions">Sessions</button></div><article class="panel view active" id="view-aps"><div id="ap-list" class="results empty">Start a scan or open a session.</div></article><article class="panel view" id="view-clients"><p class="fine">Stations are passive observations. Randomized MACs may not represent stable physical device identities.</p><div id="client-list" class="results empty">No stations.</div></article><article class="panel view" id="view-channels"><h2>Channel occupancy estimate</h2><p class="fine">Nearby AP counts—not airtime utilization or spectrum analysis.</p><div id="channel-list" class="channels empty">No observations.</div></article><article class="panel view" id="view-sessions"><div class="panel-title"><h2>Saved sessions</h2><button id="clear-history" class="danger">Clear history</button></div><div id="session-list" class="list empty">No sessions.</div></article></section>
 
-    <section id="audit" class="page">
-      <article class="panel">
-        <div class="panel-title"><div><h2>Nearby WLANs</h2><p>Passive scan using the assigned audit adapter.</p></div><div class="actions"><button id="scan-start">Start scan</button><button id="scan-stop" class="danger">Stop scan</button></div></div>
-        <div class="inline-status"><span id="scan-state" class="status-pill muted">Stopped</span><span id="scan-interface">No interface</span><span id="network-count">0 networks</span></div>
-        <div class="table-wrap"><table><thead><tr><th>SSID</th><th>BSSID</th><th>Ch</th><th>Power</th><th>Privacy</th><th>Cipher</th><th>Auth</th><th>Beacons</th><th>Data</th></tr></thead><tbody id="networks"><tr><td colspan="9" class="empty">Start a scan to discover networks.</td></tr></tbody></table></div>
-      </article>
-      <article class="panel"><div class="panel-title"><div><h2>Selected target</h2><p id="target-label">No WLAN selected</p></div><button id="run-audit" class="secondary">Rate security</button></div><div id="audit-result" class="audit-result empty">Choose a network row to inspect its advertised security.</div></article>
-    </section>
-
-    <section id="capture" class="page">
-      <article class="panel">
-        <div class="panel-title"><div><h2>Passive capture</h2><p>Channel locks to the selected target. No active frames are transmitted.</p></div><div class="actions"><button id="capture-start">Start capture</button><button id="capture-stop" class="danger">Stop &amp; save</button></div></div>
-        <div class="capture-grid">
-          <div><span>Status</span><strong id="capture-state">Stopped</strong></div><div><span>Elapsed</span><strong id="capture-elapsed">00:00:00</strong></div>
-          <div><span>Packets</span><strong id="capture-packets">0</strong></div><div><span>Size</span><strong id="capture-size">0 B</strong></div>
-          <div><span>EAPOL</span><strong id="capture-eapol">0</strong></div><div><span>Indicator</span><strong id="handshake">Not detected</strong></div>
-        </div>
-        <p id="capture-file" class="mono">No capture file</p><p id="capture-reason" class="warning"></p>
-        <p class="fine-print">The EAPOL indicator is based on frame count only. It does not validate a complete WPA M1–M4 exchange.</p>
-      </article>
-      <article class="panel"><div class="panel-title"><div><h2>Saved captures</h2><p>PCAPNG files stored on persistent storage.</p></div><button id="refresh-captures" class="secondary">Refresh</button></div><div class="table-wrap"><table><thead><tr><th>Filename</th><th>Size</th><th>Created</th><th>Actions</th></tr></thead><tbody id="captures"></tbody></table></div></article>
-    </section>
-
-    <section id="ap" class="page">
-      <div class="two-column">
-        <article class="panel">
-          <h2>Training AP</h2><p>Create a WPA2 access point for an authorized lab. Passwords are never returned by status APIs.</p>
-          <form id="ap-form">
-            <label>SSID<input id="ap-ssid" maxlength="32" required autocomplete="off"></label>
-            <label>WPA2 training password<input id="ap-password" type="password" minlength="8" maxlength="63" required autocomplete="new-password"></label>
-            <label>2.4 GHz channel<input id="ap-channel" type="number" min="1" max="13" value="6" required></label>
-            <div class="actions"><button type="submit">Start AP</button><button id="ap-stop" type="button" class="danger">Stop AP</button></div>
-          </form>
-        </article>
-        <article class="panel">
-          <h2>AP status</h2><dl class="status-list"><dt>State</dt><dd id="ap-state">Stopped</dd><dt>Interface</dt><dd id="ap-interface">—</dd><dt>Gateway</dt><dd id="ap-gateway">10.42.0.1</dd><dt>Internet uplink</dt><dd id="ap-uplink">—</dd><dt>Forwarding</dt><dd id="ap-forwarding">Disabled</dd><dt>Clients</dt><dd id="ap-client-count">0</dd><dt>Last error</dt><dd id="ap-error">—</dd></dl>
-        </article>
-      </div>
-      <article class="panel"><h2>Connected clients</h2><div class="table-wrap"><table><thead><tr><th>MAC</th><th>Signal</th><th>RX</th><th>TX</th></tr></thead><tbody id="ap-clients"><tr><td colspan="4" class="empty">No connected clients.</td></tr></tbody></table></div><p class="fine-print">Clients can open <code>http://10.42.0.1:8000</code> while connected.</p></article>
-    </section>
-  </main>
-</body>
-</html>
+<section id="audits" class="page"><div class="page-head"><div><p class="eyebrow">Planned</p><h1>Audits</h1><p>Guided authorized campaigns arrive in a later release.</p></div></div><article class="panel placeholder"><h2>No fabricated audit results</h2><p>Select a Recon AP as the current target to use the existing passive rating.</p><button id="run-audit">Rate selected network</button><div id="audit-result"></div></article></section>
+<section id="captures-page" class="page"><div class="page-head"><div><p class="eyebrow">Passive frames</p><h1>Captures</h1><p>Capture on the selected target channel.</p></div><div class="actions"><button id="capture-start">Start Capture</button><button id="capture-stop" class="danger">Stop &amp; Save</button></div></div><article class="panel"><div class="stats six"><div><strong id="capture-state">Stopped</strong><span>Status</span></div><div><strong id="capture-elapsed">00:00:00</strong><span>Elapsed</span></div><div><strong id="capture-packets">0</strong><span>Packets</span></div><div><strong id="capture-size">0 B</strong><span>Size</span></div><div><strong id="capture-eapol">0</strong><span>EAPOL</span></div><div><strong id="handshake">Not detected</strong><span>Indicator</span></div></div><p id="capture-file" class="mono">No capture file</p><p id="capture-reason" class="warning"></p><p class="fine">EAPOL count is an indicator only; it does not validate M1–M4.</p></article><article class="panel"><div class="panel-title"><h2>Saved captures</h2><button id="refresh-captures" class="secondary">Refresh</button></div><div id="captures" class="list empty">No captures.</div></article></section>
+<section id="training" class="page"><div class="page-head"><div><p class="eyebrow">Owned lab network</p><h1>Training</h1><p>WPA2 AP for authorized exercises. No credential collection.</p></div></div><div class="columns"><article class="panel"><form id="ap-form"><label>SSID<input id="ap-ssid" maxlength="32" required></label><label>Password<input id="ap-password" type="password" minlength="8" maxlength="63" autocomplete="new-password" required></label><label>Channel<input id="ap-channel" type="number" min="1" max="13" value="6" required></label><div class="actions"><button>Start AP</button><button id="ap-stop" type="button" class="danger">Stop AP</button></div></form></article><article class="panel"><h2>Status</h2><dl><dt>State</dt><dd id="ap-state">Stopped</dd><dt>Interface</dt><dd id="ap-interface">—</dd><dt>Gateway</dt><dd id="ap-gateway">10.42.0.1</dd><dt>Uplink</dt><dd id="ap-uplink">—</dd><dt>Forwarding</dt><dd id="ap-forwarding">Disabled</dd><dt>Clients</dt><dd id="ap-client-count">0</dd></dl><details class="technical"><summary>Technical diagnostics</summary><pre id="ap-error">—</pre></details></article></div><article class="panel"><h2>Connected clients</h2><div id="ap-clients" class="list empty">No clients.</div></article></section>
+<section id="reports" class="page"><div class="page-head"><div><p class="eyebrow">Planned</p><h1>Reports</h1><p>JSON, CSV, and PDF reporting is planned.</p></div></div><article class="panel placeholder"><h2>Nothing to export yet</h2><p>Passive Recon is not presented as a complete audit.</p></article></section><section id="settings" class="page"><div class="page-head"><div><p class="eyebrow">Experience</p><h1>Settings</h1></div></div><article class="panel"><h2>Interface mode</h2><p>Guided Mode explains results plainly. Expert Mode adds raw BSSID, frequency, timestamps, flags, packets, interfaces, and diagnostics. Neither exposes a shell.</p><label class="mode setting">Guided <input id="expert-mode-setting" type="checkbox" role="switch"><i></i> Expert</label></article><article class="panel"><h2>Retention</h2><p>Configured in <code>pinepi.toml</code>. History deletion requires confirmation.</p></article></section></main>
+<dialog id="detail-dialog"><button class="close" aria-label="Close">×</button><div id="detail-content"></div></dialog></body></html>

@@ -26,3 +26,17 @@ class APStartRequest(BaseModel):
             raise ValueError("control characters are not allowed")
         return value
 
+
+class TrustedProfileRequest(BaseModel):
+    ssid: str = Field(min_length=1, max_length=128)
+    approved_bssids: list[str] = Field(default_factory=list, max_length=64)
+    expected_security: str = Field(default="", max_length=80)
+    expected_channels: list[int] = Field(default_factory=list, max_length=64)
+    expected_vendor: str = Field(default="", max_length=160)
+
+    @field_validator("ssid", "expected_security", "expected_vendor")
+    @classmethod
+    def reject_controls(cls, value: str) -> str:
+        if any(ord(char) < 32 or ord(char) == 127 for char in value):
+            raise ValueError("control characters are not allowed")
+        return value

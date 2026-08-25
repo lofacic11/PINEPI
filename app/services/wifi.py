@@ -2,13 +2,16 @@ from __future__ import annotations
 
 import asyncio
 import re
+import socket
 import time
+from pathlib import Path
 
 import psutil
 
 from app.config import AppConfig
 from app.services.adapter_detection import detect_adapters
 from app.services.command import CommandError, run_command
+from app.version import VERSION
 
 
 class SystemService:
@@ -29,14 +32,28 @@ class SystemService:
             await asyncio.gather(*(self._enrich(item) for item in adapters))
             root = psutil.disk_usage("/")
             result = {
+                "version": VERSION,
+                "hostname": socket.gethostname(),
                 "cpu_percent": psutil.cpu_percent(interval=None),
+                "cpu_temperature_c": self._temperature(),
                 "ram_percent": psutil.virtual_memory().percent,
                 "storage_percent": root.percent,
                 "uptime_seconds": max(0, int(time.time() - psutil.boot_time())),
+                "current_time": time.time(),
+                "service_ready": True,
                 "interfaces": adapters,
             }
             self._cache = (now, result)
             return result
+
+    @staticmethod
+    def _temperature() -> float | None:
+        for path in ("/sys/class/thermal/thermal_zone0/temp",):
+            try:
+                return round(int(Path(path).read_text().strip()) / 1000, 1)
+            except (OSError, ValueError):
+                continue
+        return None
 
     async def _enrich(self, item: dict) -> None:
         item.update({"type": "unknown", "ssid": "", "channel": None, "tx_power_dbm": None})
@@ -55,4 +72,3 @@ class SystemService:
         item["channel"] = int(channel_match.group(1)) if channel_match else None
         item["tx_power_dbm"] = float(tx_match.group(1)) if tx_match else None
         item["ssid"] = ssid_match.group(1).strip() if ssid_match else ""
-

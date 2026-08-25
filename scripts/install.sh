@@ -11,6 +11,8 @@ export DEBIAN_FRONTEND=noninteractive
 
 apt-get update
 apt-get install -y python3 python3-venv iw aircrack-ng tshark hostapd dnsmasq nftables sudo
+# Optional offline vendor names. Recon remains functional with Unknown vendors if unavailable.
+apt-get install -y ieee-data || echo "Warning: optional ieee-data OUI dataset is unavailable." >&2
 
 # PinePi runs isolated hostapd/dnsmasq processes per AP. Distribution-wide
 # daemons would compete for interfaces, DNS port 53, and DHCP port 67.
@@ -26,6 +28,7 @@ install -d -o root -g pinepi -m 0750 \
   /var/lib/pinepi \
   /var/lib/pinepi/scans \
   /var/lib/pinepi/captures
+install -d -o pinepi -g pinepi -m 0750 /var/lib/pinepi/data
 cp -a "${PROJECT_DIR}/app" "${PROJECT_DIR}/requirements.txt" /opt/pinepi/
 python3 -m venv /opt/pinepi/.venv
 /opt/pinepi/.venv/bin/pip install --upgrade pip

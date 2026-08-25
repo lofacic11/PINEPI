@@ -1,6 +1,6 @@
-# PinePi
+# PinePi v0.8.0 — Recon Foundation
 
-PinePi is a low-cost Raspberry Pi WLAN audit and security-training appliance for authorized school and lab use. It provides passive WLAN discovery, conservative security scoring, passive packet capture, and a configurable WPA2 Training AP with normal Internet forwarding. It deliberately excludes credential harvesting, HTTPS interception, deauthentication, forced reconnects, replay attacks, and automated password cracking.
+PinePi is a low-cost Raspberry Pi WLAN audit and security-training appliance for authorized school and lab use. Version 0.8.0 adds persistent passive Recon sessions, AP/client relationships, trusted-network indicators, channel estimates, centralized operation history, and a polished Guided/Expert browser UI. It deliberately excludes credential harvesting, HTTPS interception, deauthentication, forced reconnects, replay attacks, and automated password cracking. Later releases will add guided audit campaigns and further authorized assessment workflows.
 
 ## Architecture
 
@@ -18,7 +18,7 @@ Browser (desktop/mobile)
   management | audit adapter | Training AP adapter
 ```
 
-The helper tracks process IDs under `/run/pinepi`, verifies the expected executable through `/proc`, rejects duplicate processes, notices stale processes, and applies timeouts at the web/helper boundary. Scan and capture files live under `/var/lib/pinepi`, never `/tmp`.
+The helper tracks process IDs under `/run/pinepi`, verifies the expected executable through `/proc`, rejects duplicate processes, notices stale processes, and applies timeouts at the web/helper boundary. A central application operation manager persists ownership, status, PIDs, structured failures, and recent history in SQLite. Stale operations are reconciled at startup. Persistent state lives under `/var/lib/pinepi`; ephemeral process state lives under `/run/pinepi`, never `/tmp`.
 
 ## Network topology
 
@@ -53,9 +53,13 @@ Edit `/etc/pinepi/pinepi.toml` to add another USB ID. A stable per-device MAC ru
 
 ## Features
 
-- Responsive dark dashboard with CPU, RAM, root-storage usage, uptime, adapter mode, connection, channel, and TX power.
+- Responsive, keyboard-accessible application shell for phones, tablets, and desktops, with Dashboard, Recon, Audits, Captures, Training, Reports, and Settings.
+- Guided Mode (default) uses plain-language signal and security explanations; locally persisted Expert Mode reveals BSSID, frequency, timestamps, raw advertised flags, packet counts, interfaces, and diagnostics—but never a command shell.
+- Real Dashboard state for version, hostname, CPU, temperature, storage, uptime, time, adapter roles, management network, active/recent operations, and Recon summary.
 - Boot-managed WPA2 management network with status, client count, and a stable local UI address.
-- Passive `airodump-ng` scan with structured access-point data and backend target selection.
+- Explicit passive Recon sessions with durable SQLite AP/client observations, search, server-side filters/sorting, bounded pagination, details, reopen/delete, and configurable retention.
+- AP/client relationship details, bounded signal samples, MAC-randomization warnings, offline vendor lookup, and conservative trusted-profile indicators.
+- Channel occupancy estimates based on observed nearby networks, overlap counts for 2.4 GHz, and a basic owned-AP channel recommendation. These are not airtime or spectrum-analyser measurements.
 - Modular passive rating (`app/services/audit.py`) with deliberately limited claims.
 - Channel-locked `dumpcap` PCAPNG capture, frozen stop time, live packet/size/EAPOL counts, safe download/delete, and a configured file-size stop condition.
 - EAPOL wording remains an indicator: 0 is “Not detected,” 1–3 is “EAPOL detected,” and 4+ is “Likely complete.” It is not M1/M2/M3/M4 validation.
@@ -83,9 +87,22 @@ The installer disables the distribution-wide `dnsmasq.service` and `hostapd.serv
 
 `/run` is ephemeral and is cleared at boot. The systemd unit creates `/run/pinepi` with `RuntimeDirectory=pinepi` before applying its `ReadWritePaths` sandbox. This keeps runtime PID/config/state files temporary and prevents `status=226/NAMESPACE` failures without weakening `ProtectSystem` or the other service hardening.
 
-Review `config/pinepi.example.toml` before deployment, especially the country code, adapter IDs, and capture limit. Channels 12–13 depend on the adapter, driver, and regulatory domain. Use a unique lab password; the example password is only a development default and is never returned by an API.
+Review `config/pinepi.example.toml` before deployment, especially the country code, adapter IDs, capture limit, and `CHANGE-ME-BEFORE-USE` placeholders. Channels 12–13 depend on the adapter, driver, and regulatory domain. Passwords are never returned by an API.
 
 Change the example `[management_ap]` password before exposing the appliance. Management defaults to `10.43.0.1/24`, deliberately separate from Training AP subnet `10.42.0.0/24`.
+
+### First boot and updates
+
+After installation, connect a phone or laptop to the configured Management Wi-Fi and open `http://10.43.0.1:8000`. Open **Recon**, press **Start Scan**, inspect or select an AP, then press **Stop Scan**; completed sessions remain available after restart. No terminal is needed for normal use.
+
+To update an installed checkout on the Raspberry Pi:
+
+```bash
+cd /path/to/PINEPI
+git pull --ff-only origin main
+sudo ./scripts/install.sh
+sudo systemctl status pinepi pinepi-management-ap
+```
 
 Useful commands:
 
@@ -117,7 +134,15 @@ Monitor mode receives raw 802.11 frames and disconnects that interface from ordi
 
 ## Storage protection
 
-Each new scan removes the previous `current*` scan artifacts before launching `airodump-ng`. Captures use dumpcap's file-size autostop and remain on disk if the limit is reached. Status then reports `size limit reached`. Adjust `max_capture_mb` to suit the SD card. Uninstall preserves `/var/lib/pinepi` unless `--purge-data` is explicitly passed.
+SQLite history is stored at `/var/lib/pinepi/data/pinepi.db`; scanner artifacts are in `/var/lib/pinepi/scans`; captures are in `/var/lib/pinepi/captures`. Session age/count and per-AP signal samples are bounded by `[recon]` settings, and the UI supports session or full-history deletion with confirmation. Each new scan removes the previous `current*` runtime scanner artifacts before launching `airodump-ng`. Captures use dumpcap's file-size autostop and remain on disk if the limit is reached. Uninstall preserves `/var/lib/pinepi` unless `--purge-data` is explicitly passed.
+
+## Offline vendor data
+
+PinePi looks for the system-provided IEEE OUI text file at `/usr/share/ieee-data/oui.txt` and then `/usr/share/misc/oui.txt`. Scanning continues with `Unknown` if neither exists. Install or update the Debian `ieee-data` package with `sudo apt update && sudo apt install ieee-data`; consult that package and the IEEE Registration Authority terms for dataset licensing and redistribution obligations. Locally administered addresses are labelled `Randomized/local address`, not assigned a potentially misleading vendor.
+
+## Development and mock Recon
+
+Set `mock_mode = true` under `[recon]` only in a development configuration. The UI displays a prominent **SIMULATED** banner and production never falls back automatically. `mock_scenario` accepts `normal`, `empty`, `failure`, or `missing_adapter`; normal mode includes deterministic 2.4/5 GHz, hidden, open/WPA2/WPA3, associated/unassociated, randomized-MAC, changing-signal, and trusted-profile indicator fixtures.
 
 ## Project layout
 
@@ -139,13 +164,15 @@ tests/                 parser, scoring, config, and path-safety tests
 This project is suitable only for networks you own or have explicit permission to test. WLAN discovery and packet capture can still be regulated by local law.
 
 - Authentication for the web UI is not yet implemented. Bind it only to a trusted management network and add authentication/TLS before multi-user deployment.
-- The selected target is in memory and is lost when FastAPI restarts.
+- The selected future-audit target is in memory and is lost when FastAPI restarts; Recon history itself is persistent.
 - Security scores use advertised encryption only; they do not assess password strength, router patches, WPS, segmentation, or application-layer security.
 - Four EAPOL frames do not prove a usable handshake. Proper station/BSSID correlation, replay-counter checks, and M1–M4 sequence validation remain future work.
 - Adapter mode support reported by `iw` does not guarantee a particular driver is reliable under load.
 - Status packet/EAPOL analysis reads the current capture with `capinfos`/`tshark` and is cached. Very large captures can still make this slower; a future capture-side counter should replace repeated reads.
 - AP startup currently assumes no other hostapd/dnsmasq instance owns the selected AP interface/address. NetworkManager or `dhcpcd` may need an unmanaged-interface rule for USB audit/AP devices.
-- Application state and audit history are not persistent; SQLite is the intended next step.
+- Recon sees advertised metadata, not packet payloads. SSID equality and trusted-profile differences are investigation indicators, never proof that an AP is malicious.
+- Client MACs can be randomized and should not be treated as durable physical-device identities. Previously observed clients are scoped to their selected scan session.
+- Channel counts come from observed beacon/network data and do not measure utilization, interference, or airtime.
 
 ## Troubleshooting
 

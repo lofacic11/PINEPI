@@ -50,7 +50,7 @@ def config() -> dict:
         "country": str(ap.get("country", "AT")).upper(),
         "management_enabled": bool(management.get("enabled", True)),
         "management_ssid": str(management.get("ssid", "PinePi")),
-        "management_password": str(management.get("password", "PinePiAdmin123")),
+        "management_password": str(management.get("password", "CHANGE-ME-BEFORE-USE")),
         "management_address": str(management.get("address", "10.43.0.1/24")),
         "management_gateway": str(management.get("gateway", str(management.get("address", "10.43.0.1/24")).split("/", 1)[0])),
         "management_dhcp_start": str(management.get("dhcp_start", "10.43.0.20")),

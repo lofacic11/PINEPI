@@ -7,6 +7,20 @@ def test_load_config(tmp_path):
     value = load_config(path)
     assert value.storage.max_capture_mb == 500
     assert value.adapters.audit_usb_ids == ("1234:abcd",)
+    assert value.recon.max_sessions == 50
+    assert value.recon.max_age_days == 90
+    assert value.recon.max_signal_samples_per_ap == 50
+    assert value.recon.mock_mode is False
+
+
+def test_recon_retention_and_mock_scenario(tmp_path):
+    path = tmp_path / "pinepi.toml"
+    path.write_text('[recon]\nmax_sessions=7\nmax_age_days=14\nmax_signal_samples_per_ap=3\nmock_mode=true\nmock_scenario="empty"\n')
+    value = load_config(path)
+    assert (value.recon.max_sessions, value.recon.max_age_days) == (7, 14)
+    assert value.recon.max_signal_samples_per_ap == 3
+    assert value.recon.mock_mode is True
+    assert value.recon.mock_scenario == "empty"
 
 
 def test_management_ap_configuration(tmp_path):

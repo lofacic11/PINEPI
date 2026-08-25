@@ -2,13 +2,23 @@
 # Persistent storage only; do not place scans or captures on /tmp tmpfs.
 scan_path = "/var/lib/pinepi/scans"
 capture_path = "/var/lib/pinepi/captures"
+database_path = "/var/lib/pinepi/data/pinepi.db"
 # Common values: 500, 1024, or 5120.
 max_capture_mb = 1024
+
+[recon]
+max_sessions = 50
+max_age_days = 90
+max_signal_samples_per_ap = 50
+oui_paths = ["/usr/share/ieee-data/oui.txt", "/usr/share/misc/oui.txt"]
+# Development only. Production never silently falls back to fixtures.
+mock_mode = false
+mock_scenario = "normal" # normal, empty, failure, or missing_adapter
 
 [management_ap]
 enabled = true
 ssid = "PinePi"
-password = "PinePiAdmin123"
+password = "CHANGE-ME-BEFORE-USE"
 interface_role = "management"
 address = "10.43.0.1/24"
 dhcp_start = "10.43.0.20"
@@ -24,7 +34,7 @@ dhcp_start = "10.42.0.20"
 dhcp_end = "10.42.0.200"
 country = "AT"
 # Development convenience only. The UI does not expose this value.
-default_password = "pinepi-lab"
+default_password = "CHANGE-ME-BEFORE-USE"
 
 [adapters]
 management_interfaces = ["wlan0"]

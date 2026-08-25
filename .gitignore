@@ -7,6 +7,11 @@ __pycache__/
 *.pcapng
 *.cap
 *.csv
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.log
+data/
 pinepi.toml
 .vscode/settings.json
-

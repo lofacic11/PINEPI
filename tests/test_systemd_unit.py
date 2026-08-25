@@ -17,6 +17,7 @@ def test_runtime_directory_is_declared_once():
     unit = directives()
     assert unit.count("RuntimeDirectory=pinepi") == 1
     assert unit.count("RuntimeDirectoryMode=0755") == 1
+    assert unit.count("RuntimeDirectoryPreserve=yes") == 1
 
 
 def test_runtime_directory_remains_writable_in_sandbox():

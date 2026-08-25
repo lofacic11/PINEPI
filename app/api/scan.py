@@ -7,17 +7,18 @@ router = APIRouter(prefix="/api/scan", tags=["scan"])
 
 @router.post("/start")
 async def start_scan(request: Request) -> dict:
-    return await request.app.state.scanner.start()
+    return await request.app.state.recon.start()
 
 
 @router.post("/stop")
 async def stop_scan(request: Request) -> dict:
-    return await request.app.state.scanner.stop()
+    session = request.app.state.recon.current_session()
+    return await request.app.state.recon.stop(session["id"]) if session else {"running": False}
 
 
 @router.get("/status")
 async def scan_status(request: Request) -> dict:
-    result = await request.app.state.scanner.status()
+    result = await request.app.state.recon.live_status()
     result["selected_target"] = await request.app.state.app_state.target()
     return result
 
@@ -25,4 +26,3 @@ async def scan_status(request: Request) -> dict:
 @router.post("/target")
 async def select_target(body: TargetRequest, request: Request) -> dict:
     return {"selected_target": await request.app.state.app_state.set_target(body.target.model_dump())}
-
