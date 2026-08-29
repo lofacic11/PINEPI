@@ -4,21 +4,43 @@ from pathlib import Path
 ROOT = Path(__file__).parents[1]
 JAVASCRIPT = (ROOT / "app/static/js/app.js").read_text()
 TEMPLATE = (ROOT / "app/templates/index.html").read_text()
+CSS = (ROOT / "app/static/css/app.css").read_text()
 
 
-def test_application_shell_and_accessibility_contract():
-    for section in ("Dashboard", "Recon", "Audits", "Captures", "Training", "Reports", "Settings"):
-        assert f">{section}<" in TEMPLATE
-    assert 'class="skip"' in TEMPLATE
+def test_appliance_shell_sidebar_and_accessibility_contract():
+    pages = (
+        "Dashboard", "Campaigns / Audits", "Access Point", "Recon", "Logging", "Modules",
+        "Captures", "Wireless Tools", "Packet Capture", "Diagnostics / Console", "Reports", "Settings",
+    )
+    for page in pages:
+        assert page in TEMPLATE
+    assert 'class="skip-link"' in TEMPLATE
     assert 'aria-live="polite"' in TEMPLATE
-    assert 'role="switch"' in TEMPLATE
+    assert 'aria-label="Primary navigation"' in TEMPLATE
+    assert 'id="details-drawer"' in TEMPLATE
+    assert 'id="mobile-menu"' in TEMPLATE
+    assert "@media(max-width:900px)" in CSS
 
 
-def test_untrusted_recon_fields_are_escaped_before_html_rendering():
-    assert "const $=id=>document.getElementById(id),esc=v=>" in JAVASCRIPT
-    for field in ("a.vendor", "a.bssid", "ap.vendor", "c.vendor", "c.station_mac"):
-        assert f"esc({field}" in JAVASCRIPT
-    assert 'esc(a.hidden?"Hidden SSID":a.ssid)' in JAVASCRIPT
-    assert 'esc(ap.hidden?"Hidden SSID":ap.ssid)' in JAVASCRIPT
+def test_recon_workflow_and_safe_wireless_rendering():
+    assert 'data-recon-tab="scanning"' in TEMPLATE
+    assert 'data-recon-tab="handshakes"' in TEMPLATE
+    assert 'id="landscape-donut"' in TEMPLATE
+    assert 'id="channel-chart"' in TEMPLATE
+    assert 'id="recon-session"' in TEMPLATE
+    assert 'id="ap-table-body"' in TEMPLATE
+    assert 'id="client-table-body"' in TEMPLATE
+    assert ".innerHTML" not in JAVASCRIPT
+    assert "textContent" in JAVASCRIPT
     assert "eval(" not in JAVASCRIPT
     assert "document.write" not in JAVASCRIPT
+
+
+def test_lab_password_is_visible_and_copy_has_http_fallback():
+    assert 'id="lab-password" class="monospace" type="text"' in TEMPLATE
+    assert 'id="copy-lab-password"' in TEMPLATE
+    assert "navigator.clipboard?.writeText" in JAVASCRIPT
+    assert 'document.execCommand("copy")' in JAVASCRIPT
+    assert "fallback.select()" in JAVASCRIPT
+    assert "console.log" not in JAVASCRIPT
+    assert "this is not the original network password" in TEMPLATE

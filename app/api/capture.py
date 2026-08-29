@@ -9,7 +9,7 @@ async def start_capture(request: Request) -> dict:
     target = await request.app.state.app_state.target()
     if not target:
         raise HTTPException(409, "Select a WLAN first")
-    return await request.app.state.capture.start(int(target["channel"]))
+    return await request.app.state.capture.start(int(target["channel"]), target)
 
 
 @router.post("/stop")
@@ -35,4 +35,3 @@ async def download_capture(filename: str, request: Request) -> FileResponse:
 @router.delete("/{filename}")
 async def delete_capture(filename: str, request: Request) -> dict:
     return await request.app.state.capture.delete(filename)
-

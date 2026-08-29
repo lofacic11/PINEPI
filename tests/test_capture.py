@@ -3,7 +3,7 @@ import pytest
 from app.config import AppConfig, StorageConfig
 from app.services.capture import CaptureService
 from app.services.helper import HelperClient
-from app.services.process_manager import ProcessManager
+from app.services.process_manager import OperationBusy, ProcessManager
 
 
 def service(tmp_path):
@@ -22,3 +22,17 @@ def test_unsafe_capture_names_rejected(tmp_path, name):
     with pytest.raises(ValueError):
         service(tmp_path).resolve(name)
 
+
+@pytest.mark.asyncio
+async def test_live_capture_reclaims_adapter_ownership_after_restart(tmp_path):
+    class RunningCaptureHelper:
+        async def call(self, action, **_kwargs):
+            assert action == "capture-status"
+            return {"running": True, "pid": 321}
+
+    config = AppConfig(storage=StorageConfig(scans=tmp_path / "scans", captures=tmp_path))
+    operations = ProcessManager()
+    capture = CaptureService(config, RunningCaptureHelper(), operations)
+    await capture.reconcile()
+    with pytest.raises(OperationBusy, match="audit_adapter"):
+        await operations.acquire("recon", "audit_adapter")

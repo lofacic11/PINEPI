@@ -1,6 +1,6 @@
-# PinePi v0.8.0 — Recon Foundation
+# PinePi v0.9.0 — Web UI Foundation
 
-PinePi is a low-cost Raspberry Pi WLAN audit and security-training appliance for authorized school and lab use. Version 0.8.0 adds persistent passive Recon sessions, AP/client relationships, trusted-network indicators, channel estimates, centralized operation history, and a polished Guided/Expert browser UI. It deliberately excludes credential harvesting, HTTPS interception, deauthentication, forced reconnects, replay attacks, and automated password cracking. Later releases will add guided audit campaigns and further authorized assessment workflows.
+PinePi is a low-cost Raspberry Pi WLAN audit and security-training appliance for authorized school and lab use. Version 0.9.0 builds on the persistent Recon foundation with a responsive appliance-style browser UI, integrated capture and Training AP workflows, scoped Lab credential display, safe logging, and stronger runtime recovery. It deliberately excludes credential harvesting, HTTPS interception, deauthentication, forced reconnects, replay attacks, and automated password cracking. Later releases will add guided audit campaigns and further authorized assessment workflows.
 
 ## Architecture
 
@@ -53,17 +53,19 @@ Edit `/etc/pinepi/pinepi.toml` to add another USB ID. A stable per-device MAC ru
 
 ## Features
 
-- Responsive, keyboard-accessible application shell for phones, tablets, and desktops, with Dashboard, Recon, Audits, Captures, Training, Reports, and Settings.
+- Responsive, keyboard-accessible application shell for phones, tablets, and desktops. Its collapsible desktop sidebar becomes a full mobile drawer and organizes Dashboard, Campaigns/Audits, Access Point, Recon, Logging, Modules, Captures, Wireless Tools, Packet Capture, Diagnostics/Console, Reports, and Settings.
 - Guided Mode (default) uses plain-language signal and security explanations; locally persisted Expert Mode reveals BSSID, frequency, timestamps, raw advertised flags, packet counts, interfaces, and diagnostics—but never a command shell.
 - Real Dashboard state for version, hostname, CPU, temperature, storage, uptime, time, adapter roles, management network, active/recent operations, and Recon summary.
 - Boot-managed WPA2 management network with status, client count, and a stable local UI address.
 - Explicit passive Recon sessions with durable SQLite AP/client observations, search, server-side filters/sorting, bounded pagination, details, reopen/delete, and configurable retention.
+- PinePi-branded Recon workspace with Scanning/Handshakes tabs, real wireless-object and channel-distribution summaries, previous-session metadata, AP/client tables, and responsive details drawers. Channel distribution is observed AP count, never spectrum utilization or airtime.
 - AP/client relationship details, bounded signal samples, MAC-randomization warnings, offline vendor lookup, and conservative trusted-profile indicators.
 - Channel occupancy estimates based on observed nearby networks, overlap counts for 2.4 GHz, and a basic owned-AP channel recommendation. These are not airtime or spectrum-analyser measurements.
 - Modular passive rating (`app/services/audit.py`) with deliberately limited claims.
 - Channel-locked `dumpcap` PCAPNG capture, frozen stop time, live packet/size/EAPOL counts, safe download/delete, and a configured file-size stop condition.
 - EAPOL wording remains an indicator: 0 is “Not detected,” 1–3 is “EAPOL detected,” and 4+ is “Likely complete.” It is not M1/M2/M3/M4 validation.
 - WPA2 Training AP with DHCP/DNS, client enumeration, dynamic default IPv4 uplink selection, and scoped nftables forwarding/NAT.
+- Read-only bounded logging for an exact allowlist of PinePi application, management, hostapd, dnsmasq, Recon, and capture sources. Diagnostics expose registered status data only; there is no browser shell or arbitrary file reader.
 
 ## Training AP networking
 
@@ -87,13 +89,15 @@ The installer disables the distribution-wide `dnsmasq.service` and `hostapd.serv
 
 `/run` is ephemeral and is cleared at boot. The systemd unit creates `/run/pinepi` with `RuntimeDirectory=pinepi` before applying its `ReadWritePaths` sandbox. This keeps runtime PID/config/state files temporary and prevents `status=226/NAMESPACE` failures without weakening `ProtectSystem` or the other service hardening.
 
-Review `config/pinepi.example.toml` before deployment, especially the country code, adapter IDs, capture limit, and `CHANGE-ME-BEFORE-USE` placeholders. Channels 12–13 depend on the adapter, driver, and regulatory domain. Passwords are never returned by an API.
+Review `config/pinepi.example.toml` before deployment, especially the country code, adapter IDs, capture limit, and `CHANGE-ME-BEFORE-USE` placeholders. Channels 12–13 depend on the adapter, driver, and regulatory domain. General status, settings, operation, health, and logging APIs never return passwords.
+
+The one deliberate exception is `GET /api/training-ap/credentials`: while a PinePi-owned Training/Lab AP is running, it returns only that AP's active SSID, channel, and PSK so the Access Point page can keep the Lab password visible and copyable. The route accepts the direct TCP peer only from the configured Management subnet (or loopback for local development), does not trust `X-Forwarded-For`, and reads the root-owned active hostapd configuration through the restricted helper. It never returns a Management Wi-Fi password, system password, scanned-network password, or captured credential. PinePi does not know or recover an observed network's original WPA password; a same-SSID Lab AP always uses a new PinePi-controlled PSK.
 
 Change the example `[management_ap]` password before exposing the appliance. Management defaults to `10.43.0.1/24`, deliberately separate from Training AP subnet `10.42.0.0/24`.
 
 ### First boot and updates
 
-After installation, connect a phone or laptop to the configured Management Wi-Fi and open `http://10.43.0.1:8000`. Open **Recon**, press **Start Scan**, inspect or select an AP, then press **Stop Scan**; completed sessions remain available after restart. No terminal is needed for normal use.
+After installation, connect a phone or laptop to the configured Management Wi-Fi and open `http://10.43.0.1:8000`. Open **Recon**, press **Start Scan**, inspect or select an AP, then press **Stop Scan**; completed sessions remain available after restart. Selecting an AP can prefill an authorized same-SSID Lab AP or a channel-locked passive capture. The displayed Lab password is explicitly a new PinePi-controlled password and its Copy button includes a selection-based fallback for the normal HTTP management origin. No terminal is needed for normal use.
 
 To update an installed checkout on the Raspberry Pi:
 
@@ -132,6 +136,8 @@ The dashboard and `/health` work without root. Hardware actions intentionally fa
 
 Monitor mode receives raw 802.11 frames and disconnects that interface from ordinary managed Wi-Fi. PinePi therefore reserves a dedicated adapter for scan/capture and leaves the management uplink separate. Scan and capture are mutually exclusive because both own the audit adapter. Starting a capture locks it to the selected target channel. Clean FastAPI shutdown stops transient scan/capture operations so capture files remain valid; the Training AP is left under explicit Start/Stop control.
 
+The helper also restores the audit adapter to managed mode if scanner/capture startup fails or a tracked process exits unexpectedly. Training AP startup is transactional: hostapd, dnsmasq, PinePi's dedicated `table ip pinepi`, the owned interface address, and the prior `net.ipv4.ip_forward` value are rolled back after partial failure. Stop and identical repeated start requests are idempotent; different settings require an explicit stop first. Startup reconciliation reclaims operation ownership for validated live scanner, capture, and Training AP processes after a FastAPI restart.
+
 ## Storage protection
 
 SQLite history is stored at `/var/lib/pinepi/data/pinepi.db`; scanner artifacts are in `/var/lib/pinepi/scans`; captures are in `/var/lib/pinepi/captures`. Session age/count and per-AP signal samples are bounded by `[recon]` settings, and the UI supports session or full-history deletion with confirmation. Each new scan removes the previous `current*` runtime scanner artifacts before launching `airodump-ng`. Captures use dumpcap's file-size autostop and remain on disk if the limit is reached. Uninstall preserves `/var/lib/pinepi` unless `--purge-data` is explicitly passed.
@@ -164,6 +170,7 @@ tests/                 parser, scoring, config, and path-safety tests
 This project is suitable only for networks you own or have explicit permission to test. WLAN discovery and packet capture can still be regulated by local law.
 
 - Authentication for the web UI is not yet implemented. Bind it only to a trusted management network and add authentication/TLS before multi-user deployment.
+- The visible Lab PSK is intentionally available to every client on the trusted Management subnet while the PinePi-owned AP is running. Network isolation is therefore part of the current access-control model; the route is not a substitute for future UI authentication.
 - The selected future-audit target is in memory and is lost when FastAPI restarts; Recon history itself is persistent.
 - Security scores use advertised encryption only; they do not assess password strength, router patches, WPS, segmentation, or application-layer security.
 - Four EAPOL frames do not prove a usable handshake. Proper station/BSSID correlation, replay-counter checks, and M1–M4 sequence validation remain future work.
@@ -186,6 +193,10 @@ This project is suitable only for networks you own or have explicit permission t
 
 **Capture remains at zero:** check `dumpcap -D`, interface permissions/driver state, free space with `df -h /var/lib/pinepi`, and whether the selected channel is correct.
 
+**Lab password is unavailable:** access PinePi through the configured Management subnet, not the Training subnet or another routed interface. The credential endpoint intentionally uses the direct connection address and ignores forwarded-client headers. Confirm both Training hostapd and dnsmasq are still running.
+
+**A scan/capture process exited:** open **Logging** and select Recon scanner or Packet capture. Output is limited to the newest 80 lines/16 KiB and credential-like values are redacted. PinePi restores the audit interface to managed mode when it observes the exit; confirm this with `iw dev` before restarting the operation.
+
 **Web API reports sudo failure:** validate the installed policy with `sudo visudo -cf /etc/sudoers.d/pinepi` and ensure `/usr/local/sbin/pinepi-helper` is root-owned and not writable by `pinepi`.
 
 **dnsmasq failed to start:** PinePi now returns the daemon's actual startup reason and retains its runtime log under `/run/pinepi/<management|training>/dnsmasq.log`. Check `journalctl -u pinepi-management-ap.service -n 50`, `ss -lntup`, `ps aux | grep '[d]nsmasq'`, `ip addr`, and `iw dev`. A distribution or NetworkManager dnsmasq bound to all addresses must be disabled; PinePi instances bind only their assigned interface/gateway and use separate PID and lease files.
@@ -194,4 +205,4 @@ This project is suitable only for networks you own or have explicit permission t
 
 ## Planned extensions
 
-The service boundaries support rogue/duplicate SSID detection, channel analytics, frame-type and packets-per-second counters, proper WPA message validation, SQLite audit history, JSON/CSV/PDF reports, and a clearly labelled dummy-credential training portal. None requires broadening the helper into arbitrary command execution.
+The service boundaries support rogue/duplicate SSID detection, richer channel analytics, frame-type and packets-per-second counters, proper WPA message validation, durable capture-target metadata, editable validated settings, and JSON/CSV/PDF reports. None requires broadening the helper into arbitrary command execution.

@@ -195,14 +195,17 @@ def scan_start(interface: str) -> None:
     for path in root.glob("current*"):
         if path.is_file() and not path.is_symlink():
             path.unlink()
-    set_monitor(interface)
-    process = subprocess.Popen(
-        [executable("airodump-ng"), "--write", str(root / "current"), "--output-format", "csv", interface],
-        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
-    )
-    time.sleep(0.35)
-    if process.poll() is not None:
-        raise HelperError("airodump-ng failed to start")
+    try:
+        set_monitor(interface)
+        process = start_daemon(
+            "airodump-ng",
+            [executable("airodump-ng"), "--write", str(root / "current"), "--output-format", "csv", interface],
+            RUN_DIR / "recon.log",
+            0.35,
+        )
+    except Exception:
+        set_managed(interface)
+        raise
     state = {"running": True, "pid": process.pid, "interface": interface, "started_at": time.time()}
     save_state("scan", state)
     reply(**state)
@@ -211,6 +214,9 @@ def scan_start(interface: str) -> None:
 def scan_stop() -> None:
     state = load_state("scan")
     terminate(state.get("pid"), "airodump-ng")
+    interface = str(state.get("interface", ""))
+    if IFACE_RE.fullmatch(interface):
+        set_managed(interface)
     state.update(running=False, stopped_at=time.time())
     save_state("scan", state)
     reply(**state)
@@ -222,6 +228,9 @@ def scan_status() -> None:
     state["running"] = running
     if state and not running and "stopped_at" not in state:
         state["stopped_at"] = time.time()
+        interface = str(state.get("interface", ""))
+        if IFACE_RE.fullmatch(interface):
+            set_managed(interface)
         save_state("scan", state)
     reply(**state)
 
@@ -239,17 +248,20 @@ def capture_start(interface: str, channel_text: str, max_mb_text: str) -> None:
     if scan.get("running") and process_alive(scan.get("pid"), "airodump-ng"):
         raise HelperError("Stop the scan before starting a capture")
     root = validate_storage(CFG["captures"])
-    set_monitor(interface, channel)
     stamp = time.strftime("%Y%m%d-%H%M%S")
     filename = f"capture-{stamp}-{os.getpid()}.pcapng"
     path = root / filename
-    process = subprocess.Popen(
-        [executable("dumpcap"), "-q", "-i", interface, "-w", str(path), "-a", f"filesize:{max_mb * 1024}"],
-        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
-    )
-    time.sleep(0.5)
-    if process.poll() is not None:
-        raise HelperError("dumpcap failed to start")
+    try:
+        set_monitor(interface, channel)
+        process = start_daemon(
+            "dumpcap",
+            [executable("dumpcap"), "-q", "-i", interface, "-w", str(path), "-a", f"filesize:{max_mb * 1024}"],
+            RUN_DIR / "capture.log",
+            0.5,
+        )
+    except Exception:
+        set_managed(interface)
+        raise
     state = {
         "running": True, "pid": process.pid, "interface": interface, "channel": channel,
         "filename": filename, "path": str(path), "started_at": time.time(), "max_bytes": max_mb * 1024 * 1024,
@@ -272,6 +284,10 @@ def capture_details(state: dict) -> dict:
             state["stop_reason"] = "size limit reached"
         else:
             state["stop_reason"] = state.get("stop_reason") or "capture process exited"
+        interface = str(state.get("interface", ""))
+        if IFACE_RE.fullmatch(interface):
+            set_managed(interface)
+            state["interface_restored"] = True
         save_state("capture", state)
     state["running"] = running
     end = time.time() if running else float(state.get("stopped_at", state.get("started_at", time.time())))
@@ -305,6 +321,9 @@ def capture_stop() -> None:
     state = load_state("capture")
     terminate(state.get("pid"), "dumpcap")
     if state:
+        interface = str(state.get("interface", ""))
+        if IFACE_RE.fullmatch(interface):
+            set_managed(interface)
         state.update(running=False, stopped_at=time.time(), stop_reason="stopped by user")
         save_state("capture", state)
     reply(**capture_details(state))
@@ -403,7 +422,7 @@ def recent_log(path: Path) -> str:
         text = path.read_text(errors="replace")[-4096:]
     except OSError:
         return ""
-    return " | ".join(line.strip() for line in text.splitlines()[-6:] if line.strip())
+    return " | ".join(sanitize_log_lines(text)[-6:])
 
 
 def start_daemon(label: str, argv: list[str], log_path: Path, delay: float) -> subprocess.Popen:
@@ -601,18 +620,24 @@ def nft_cleanup() -> None:
         run([nft, "delete", "table", "ip", "pinepi"], check=False)
 
 
-def ap_stop() -> None:
-    state = load_state("training")
+def cleanup_ap_runtime(state: dict, kind: str) -> None:
+    """Idempotently undo only resources owned by one PinePi AP."""
     terminate(state.get("dnsmasq_pid"), "dnsmasq")
     terminate(state.get("hostapd_pid"), "hostapd")
-    nft_cleanup()
+    if kind == "training":
+        nft_cleanup()
     interface = str(state.get("interface", ""))
     if IFACE_RE.fullmatch(interface) and (Path("/sys/class/net") / interface).exists():
         run([executable("ip"), "addr", "flush", "dev", interface], check=False)
         set_managed(interface)
-    if state.get("previous_forward") in ("0", "1"):
+    if kind == "training" and state.get("previous_forward") in ("0", "1"):
         run([executable("sysctl"), "-w", f"net.ipv4.ip_forward={state['previous_forward']}"], check=False)
-    remove_runtime_configs("training")
+    remove_runtime_configs(kind)
+
+
+def ap_stop() -> None:
+    state = load_state("training")
+    cleanup_ap_runtime(state, "training")
     state.update(running=False, forwarding=False, stopped_at=time.time())
     save_state("training", state)
     reply(**public_ap_state(state, "training"))
@@ -645,9 +670,8 @@ def clients(interface: str) -> list[dict]:
 def public_ap_state(state: dict, kind: str) -> dict:
     running = process_alive(state.get("hostapd_pid"), "hostapd") and process_alive(state.get("dnsmasq_pid"), "dnsmasq")
     if state.get("running") and not running:
+        cleanup_ap_runtime(state, kind)
         state.update(running=False, forwarding=False, stopped_at=time.time())
-        if kind == "training":
-            nft_cleanup()
         log_error = recent_log(RUN_DIR / kind / "dnsmasq.log") or recent_log(RUN_DIR / kind / "hostapd.log")
         if log_error:
             state["last_error"] = log_error
@@ -668,6 +692,73 @@ def ap_status() -> None:
     if not state:
         state = {"running": False, "forwarding": False, "gateway": CFG["gateway"], "clients": [], "client_count": 0}
     reply(**public_ap_state(state, "training"))
+
+
+def ap_credentials() -> None:
+    state = load_state("training")
+    if not (
+        state.get("running")
+        and process_alive(state.get("hostapd_pid"), "hostapd")
+        and process_alive(state.get("dnsmasq_pid"), "dnsmasq")
+    ):
+        raise HelperError("Training AP is not running")
+    try:
+        lines = (RUN_DIR / "training" / "hostapd.conf").read_text().splitlines()
+    except OSError as exc:
+        raise HelperError("Training AP credential is unavailable") from exc
+    password = next((line.split("=", 1)[1] for line in lines if line.startswith("wpa_passphrase=")), "")
+    if not password:
+        raise HelperError("Training AP credential is unavailable")
+    reply(ssid=state.get("ssid", ""), password=password, channel=state.get("channel"))
+
+
+LOG_FILES = {
+    "management_hostapd": RUN_DIR / "management" / "hostapd.log",
+    "management_dnsmasq": RUN_DIR / "management" / "dnsmasq.log",
+    "training_hostapd": RUN_DIR / "training" / "hostapd.log",
+    "training_dnsmasq": RUN_DIR / "training" / "dnsmasq.log",
+    "recon": RUN_DIR / "recon.log",
+    "capture": RUN_DIR / "capture.log",
+}
+
+
+def sanitize_log_lines(text: str) -> list[str]:
+    result: list[str] = []
+    for raw in text[-16384:].splitlines()[-80:]:
+        line = "".join(char if ord(char) >= 32 and ord(char) != 127 else "�" for char in raw)
+        line = re.sub(
+            r"(?i)(\b(?:password|passphrase|wpa_passphrase|psk)\b[\"']?\s*[=:]\s*)[\"']?[^,\s}\"]+[\"']?",
+            r"\1[redacted]",
+            line,
+        )
+        result.append(line[:500])
+    return result
+
+
+def logs(source: str) -> None:
+    if source == "application":
+        result = run(
+            [executable("journalctl"), "-u", "pinepi.service", "-n", "80", "--no-pager", "-o", "short-iso"],
+            timeout=8,
+            check=False,
+        )
+        text = result.stdout or result.stderr
+    elif source == "management_service":
+        result = run(
+            [executable("journalctl"), "-u", "pinepi-management-ap.service", "-n", "80", "--no-pager", "-o", "short-iso"],
+            timeout=8,
+            check=False,
+        )
+        text = result.stdout or result.stderr
+    elif source in LOG_FILES:
+        path = LOG_FILES[source]
+        try:
+            text = path.read_text(errors="replace") if path.is_file() and not path.is_symlink() else ""
+        except OSError:
+            text = ""
+    else:
+        raise HelperError("Unsupported log source")
+    reply(source=source, lines=sanitize_log_lines(text), truncated=len(text) > 16384)
 
 
 def management_start() -> None:
@@ -740,13 +831,7 @@ def management_start() -> None:
 
 def management_stop() -> None:
     state = load_state("management")
-    terminate(state.get("dnsmasq_pid"), "dnsmasq")
-    terminate(state.get("hostapd_pid"), "hostapd")
-    interface = str(state.get("interface", ""))
-    if IFACE_RE.fullmatch(interface) and (Path("/sys/class/net") / interface).exists():
-        run([executable("ip"), "addr", "flush", "dev", interface], check=False)
-        set_managed(interface)
-    remove_runtime_configs("management")
+    cleanup_ap_runtime(state, "management")
     state.update(running=False, forwarding=False, stopped_at=time.time())
     save_state("management", state)
     reply(**public_ap_state(state, "management"))
@@ -790,7 +875,9 @@ def parser() -> argparse.ArgumentParser:
     delete = commands.add_parser("capture-delete"); delete.add_argument("filename")
     ap = commands.add_parser("ap-start"); ap.add_argument("interface"); ap.add_argument("channel"); ap.add_argument("excluded_interfaces", nargs="?", default="")
     commands.add_parser("ap-stop"); commands.add_parser("ap-status")
+    commands.add_parser("ap-credentials")
     commands.add_parser("management-start"); commands.add_parser("management-stop"); commands.add_parser("management-status")
+    log = commands.add_parser("logs"); log.add_argument("source")
     return value
 
 
@@ -804,9 +891,10 @@ def main() -> int:
         "capture-stop": capture_stop, "capture-status": capture_status,
         "capture-delete": lambda: capture_delete(args.filename),
         "ap-start": lambda: ap_start(args.interface, args.channel, args.excluded_interfaces),
-        "ap-stop": ap_stop, "ap-status": ap_status,
+        "ap-stop": ap_stop, "ap-status": ap_status, "ap-credentials": ap_credentials,
         "management-start": management_start_safe, "management-stop": management_stop,
         "management-status": management_status,
+        "logs": lambda: logs(args.source),
     }
     actions[args.action]()
     return 0

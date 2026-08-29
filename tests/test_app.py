@@ -4,8 +4,8 @@ import pytest
 from app.main import app
 
 
-def test_application_version_is_v080():
-    assert app.version == "0.8.0"
+def test_application_version_is_v090():
+    assert app.version == "0.9.0"
 
 
 @pytest.mark.asyncio

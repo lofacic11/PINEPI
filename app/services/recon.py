@@ -35,8 +35,8 @@ class ReconService:
         session_id = str(uuid.uuid4())
         now = datetime.now(UTC).isoformat()
         self.db.execute(
-            "INSERT INTO scan_sessions(id,started_at,status,audit_interface,monitor_interface,operation_id,mock) VALUES(?,?,?,?,?,?,?)",
-            (session_id, now, "preparing", interface, interface, operation_id, int(self.config.recon.mock_mode)),
+            "INSERT INTO scan_sessions(id,started_at,status,audit_interface,monitor_interface,bands,operation_id,mock) VALUES(?,?,?,?,?,?,?,?)",
+            (session_id, now, "preparing", interface, interface, "Both", operation_id, int(self.config.recon.mock_mode)),
         )
         try:
             if self.config.recon.mock_mode:
@@ -152,7 +152,16 @@ class ReconService:
         return {"items": self.db.query("SELECT * FROM scan_sessions ORDER BY started_at DESC LIMIT ? OFFSET ?", (limit, offset)), "limit": limit, "offset": offset}
 
     def session(self, session_id: str) -> dict | None:
-        return self.db.one("SELECT * FROM scan_sessions WHERE id=?", (session_id,))
+        session = self.db.one("SELECT * FROM scan_sessions WHERE id=?", (session_id,))
+        if session:
+            relationships = self.db.one(
+                "SELECT SUM(CASE WHEN relationship='associated' THEN 1 ELSE 0 END) associated, "
+                "SUM(CASE WHEN relationship<>'associated' THEN 1 ELSE 0 END) other FROM clients WHERE session_id=?",
+                (session_id,),
+            )
+            session["associated_client_count"] = int(relationships["associated"] or 0)
+            session["other_client_count"] = int(relationships["other"] or 0)
+        return session
 
     def current_session(self) -> dict | None:
         return self.db.one("SELECT * FROM scan_sessions ORDER BY started_at DESC LIMIT 1")
@@ -207,7 +216,9 @@ class ReconService:
         return ap
 
     def clients(self, session_id: str, limit: int = 50, offset: int = 0) -> dict:
-        return {"items": self.db.query("SELECT c.*,ap.ssid associated_ssid FROM clients c LEFT JOIN access_points ap ON ap.session_id=c.session_id AND ap.bssid=c.bssid WHERE c.session_id=? ORDER BY c.signal DESC LIMIT ? OFFSET ?", (session_id, limit, offset)), "limit": limit, "offset": offset}
+        items = self.db.query("SELECT c.*,ap.ssid associated_ssid FROM clients c LEFT JOIN access_points ap ON ap.session_id=c.session_id AND ap.bssid=c.bssid WHERE c.session_id=? ORDER BY c.signal DESC LIMIT ? OFFSET ?", (session_id, limit, offset))
+        total = self.db.one("SELECT COUNT(*) total FROM clients WHERE session_id=?", (session_id,))["total"]
+        return {"items": items, "total": total, "limit": limit, "offset": offset}
 
     def client(self, station_mac: str, session_id: str) -> dict:
         normalized = normalize_mac(station_mac)

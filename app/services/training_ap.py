@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import hmac
+
 from app.config import AppConfig
 from app.services.adapter_detection import detect_adapters, interface_for_role
 from app.services.helper import HelperClient
-from app.services.process_manager import ProcessManager
+from app.services.process_manager import OperationBusy, ProcessManager
 
 
 class TrainingAPService:
@@ -11,9 +13,29 @@ class TrainingAPService:
         self.config, self.helper, self.processes = config, helper, processes
         self._operation_id: str | None = None
 
+    async def reconcile(self) -> None:
+        """Reclaim ownership when both AP daemons are still validated by the helper."""
+        try:
+            status = await self.status()
+        except Exception:
+            return
+        if status.get("running"):
+            self._operation_id = await self.processes.acquire("training_ap", "training_adapter")
+
     async def start(self, ssid: str, password: str, channel: int) -> dict:
         adapters = await detect_adapters(self.config)
         interface = interface_for_role(adapters, "training_ap")
+        current = await self.status()
+        if current.get("running"):
+            credentials = await self.credentials()
+            same_settings = (
+                current.get("ssid") == ssid
+                and int(current.get("channel", 0)) == channel
+                and hmac.compare_digest(str(credentials.get("password", "")), password)
+            )
+            if same_settings:
+                return {**current, "already_running": True}
+            raise OperationBusy("Training AP is already running with different settings; stop it before changing settings")
         excluded = excluded_uplink_interfaces(adapters, interface)
         async def operation() -> dict:
             operation_id = await self.processes.acquire("training_ap", "training_adapter")
@@ -45,6 +67,16 @@ class TrainingAPService:
             status.pop(secret, None)
         status.setdefault("gateway", self.config.ap.gateway)
         return status
+
+    async def credentials(self) -> dict:
+        """Return only the currently running PinePi-owned AP credential."""
+        result = await self.helper.call("ap-credentials")
+        return {
+            "ssid": str(result.get("ssid", "")),
+            "password": str(result.get("password", "")),
+            "channel": result.get("channel"),
+            "notice": "Lab AP password — this is not the original network password.",
+        }
 
 
 def excluded_uplink_interfaces(adapters: list[dict], training_interface: str) -> set[str]:

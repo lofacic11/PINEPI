@@ -20,8 +20,22 @@ class CaptureService:
         self._cache: tuple[float, dict] | None = None
         self._lock = asyncio.Lock()
         self._operation_id: str | None = None
+        self._target: dict | None = None
 
-    async def start(self, channel: int) -> dict:
+    async def reconcile(self) -> None:
+        """Reclaim the audit resource only when the helper validates a live capture."""
+        try:
+            status = await self.helper.call("capture-status", timeout=25)
+        except Exception:
+            return
+        if status.get("running"):
+            try:
+                self._operation_id = await self.processes.acquire("capture", "audit_adapter")
+                self.processes.attach_pid(self._operation_id, status.get("pid"))
+            except Exception:
+                self._operation_id = None
+
+    async def start(self, channel: int, target: dict | None = None) -> dict:
         if not 1 <= channel <= 196:
             raise ValueError("Invalid channel")
         interface = interface_for_role(await detect_adapters(self.config), "audit")
@@ -31,7 +45,9 @@ class CaptureService:
             try:
                 result = await self.helper.call("capture-start", interface, str(channel), str(self.config.storage.max_capture_mb))
                 self._operation_id = operation_id
+                self._target = target.copy() if target else None
                 self.processes.attach_pid(operation_id, result.get("pid"))
+                result["target"] = self._target
                 result["operation_id"] = operation_id
                 return result
             except Exception as exc:
@@ -60,6 +76,7 @@ class CaptureService:
                 "Not detected" if frames == 0 else "EAPOL detected" if frames < 4 else "Likely complete"
             )
             status["handshake_note"] = "Frame count is only an indicator; it does not validate an M1-M4 exchange."
+            status["target"] = self._target
             if not status.get("running") and self._operation_id:
                 self.processes.finish(self._operation_id, "completed")
                 self._operation_id = None

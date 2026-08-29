@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, ValidationInfo, field_validator
 
 
 class ScanTarget(BaseModel):
@@ -21,9 +21,13 @@ class APStartRequest(BaseModel):
 
     @field_validator("ssid", "password")
     @classmethod
-    def no_control_characters(cls, value: str) -> str:
+    def no_control_characters(cls, value: str, info: ValidationInfo) -> str:
         if any(ord(char) < 32 or ord(char) == 127 for char in value):
             raise ValueError("control characters are not allowed")
+        byte_length = len(value.encode("utf-8"))
+        minimum, maximum = (1, 32) if info.field_name == "ssid" else (8, 63)
+        if not minimum <= byte_length <= maximum:
+            raise ValueError(f"{info.field_name} must be {minimum}–{maximum} UTF-8 bytes")
         return value
 
 

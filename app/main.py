@@ -10,7 +10,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from app.api import audit, capture, management_ap, operations, recon, scan, system, training_ap
+from app.api import audit, capture, diagnostics, management_ap, operations, recon, scan, system, training_ap
 from app.config import load_config
 from app.services.capture import CaptureService
 from app.services.database import Database
@@ -42,6 +42,7 @@ async def lifespan(app: FastAPI):
     processes = ProcessManager(database)
     processes.recover()
     app.state.config = config
+    app.state.helper = helper
     app.state.app_state = AppState()
     app.state.system_service = SystemService(config)
     app.state.database = database
@@ -51,6 +52,8 @@ async def lifespan(app: FastAPI):
     app.state.training_ap = TrainingAPService(config, helper, processes)
     app.state.management_ap = ManagementAPService(config, helper)
     await app.state.recon.reconcile()
+    await app.state.capture.reconcile()
+    await app.state.training_ap.reconcile()
     yield
     # Transient operations are stopped to keep files valid on a clean web-service shutdown.
     async def stop_recon():
@@ -84,7 +87,7 @@ class SecurityHeadersMiddleware:
 app = FastAPI(title="PinePi", version=VERSION, lifespan=lifespan)
 app.add_middleware(SecurityHeadersMiddleware)
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
-for api_router in (system.router, scan.router, recon.router, operations.router, audit.router, capture.router, training_ap.router, management_ap.router):
+for api_router in (system.router, diagnostics.router, scan.router, recon.router, operations.router, audit.router, capture.router, training_ap.router, management_ap.router):
     app.include_router(api_router)
 
 

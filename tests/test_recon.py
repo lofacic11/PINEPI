@@ -50,6 +50,7 @@ async def test_mock_session_persistence_filters_relationships_and_idempotent_sto
     session = await recon.start()
     assert session["status"] == "running"
     assert session["ap_count"] == len(MOCK_APS)
+    assert session["associated_client_count"] + session["other_client_count"] == len(MOCK_CLIENTS)
     assert database.one("SELECT COUNT(*) n FROM clients")["n"] == len(MOCK_CLIENTS)
     assert recon.access_points(session["id"], security="Open")["total"] == 2
     assert recon.access_points(session["id"], hidden=True)["total"] == 1
