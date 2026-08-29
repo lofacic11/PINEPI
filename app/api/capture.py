@@ -32,6 +32,36 @@ async def download_capture(filename: str, request: Request) -> FileResponse:
     return FileResponse(request.app.state.capture.resolve(filename), filename=filename, media_type="application/vnd.tcpdump.pcap")
 
 
+@router.get("/{filename}/analysis")
+async def analyze_capture(filename: str, request: Request) -> dict:
+    return await request.app.state.capture_analysis.overview(filename)
+
+
+@router.post("/{filename}/validate-hcx")
+async def validate_hcx(filename: str, request: Request) -> dict:
+    return await request.app.state.capture_analysis.hcx_validate(filename)
+
+
+@router.post("/{filename}/analyze-aircrack")
+async def analyze_aircrack(filename: str, request: Request) -> dict:
+    return await request.app.state.capture_analysis.aircrack_summary(filename)
+
+
+@router.post("/{filename}/analyze-suricata")
+async def analyze_suricata(filename: str, request: Request) -> dict:
+    return await request.app.state.offline_engines.suricata(filename)
+
+
+@router.post("/{filename}/analyze-zeek")
+async def analyze_zeek(filename: str, request: Request) -> dict:
+    return await request.app.state.offline_engines.zeek(filename)
+
+
+@router.get("/{filename}/frames")
+async def frame_explorer(filename: str, request: Request, limit: int = 100, offset: int = 0) -> dict:
+    return request.app.state.capture_analysis.frame_explorer(filename, limit, offset)
+
+
 @router.delete("/{filename}")
 async def delete_capture(filename: str, request: Request) -> dict:
     return await request.app.state.capture.delete(filename)

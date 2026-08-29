@@ -59,6 +59,8 @@ def config() -> dict:
         "management_country": str(management.get("country_code", "AT")).upper(),
         "management_interfaces": tuple(str(value) for value in adapters.get("management_interfaces", ["wlan0"])),
         "management_drivers": tuple(str(value).lower() for value in adapters.get("management_drivers", ["brcmfmac"])),
+        "max_active_seconds": min(60, max(1, int(raw.get("active_tests", {}).get("max_runtime_seconds", 30)))),
+        "max_deauth_bursts": min(128, max(1, int(raw.get("active_tests", {}).get("max_deauth_bursts", 32)))),
     }
 
 
@@ -191,6 +193,12 @@ def scan_start(interface: str) -> None:
     capture = load_state("capture")
     if capture.get("running") and process_alive(capture.get("pid"), "dumpcap"):
         raise HelperError("Cannot scan while a capture is running")
+    active = load_state("active")
+    if active.get("running") and process_alive(active.get("pid"), active.get("executable", "aireplay-ng")):
+        raise HelperError("Cannot scan while an active wireless test is running")
+    monitor = load_state("monitor")
+    if monitor.get("running"):
+        raise HelperError("Disable manual monitor mode before starting Recon")
     root = validate_storage(CFG["scans"])
     for path in root.glob("current*"):
         if path.is_file() and not path.is_symlink():
@@ -247,6 +255,12 @@ def capture_start(interface: str, channel_text: str, max_mb_text: str) -> None:
     scan = load_state("scan")
     if scan.get("running") and process_alive(scan.get("pid"), "airodump-ng"):
         raise HelperError("Stop the scan before starting a capture")
+    active = load_state("active")
+    if active.get("running") and process_alive(active.get("pid"), active.get("executable", "aireplay-ng")):
+        raise HelperError("Stop the active wireless test before starting a capture")
+    monitor = load_state("monitor")
+    if monitor.get("running"):
+        raise HelperError("Disable manual monitor mode before starting a capture")
     root = validate_storage(CFG["captures"])
     stamp = time.strftime("%Y%m%d-%H%M%S")
     filename = f"capture-{stamp}-{os.getpid()}.pcapng"
@@ -345,6 +359,238 @@ def capture_delete(filename: str) -> None:
         raise HelperError("Capture not found")
     path.unlink()
     reply(deleted=filename)
+
+
+def ensure_wireless_operation_idle() -> None:
+    checks = (("scan", "airodump-ng"), ("capture", "dumpcap"), ("active", "aireplay-ng"))
+    for state_name, expected in checks:
+        state = load_state(state_name)
+        executable_name = str(state.get("executable", expected))
+        if state.get("running") and process_alive(state.get("pid"), executable_name):
+            raise HelperError(f"Audit adapter is busy with {state_name}")
+
+
+def monitor_enable(interface: str, channel_text: str) -> None:
+    interface = validate_interface(interface)
+    channel: int | None = None
+    if channel_text:
+        try:
+            channel = int(channel_text)
+        except ValueError as exc:
+            raise HelperError("Invalid monitor channel") from exc
+        if not 1 <= channel <= 196:
+            raise HelperError("Monitor channel must be between 1 and 196")
+    ensure_wireless_operation_idle()
+    state = load_state("monitor")
+    if state.get("running") and state.get("interface") == interface and state.get("channel") == channel:
+        reply(**state, already_running=True)
+        return
+    if state.get("running"):
+        raise HelperError("Another adapter is already in PinePi-managed monitor mode")
+    try:
+        set_monitor(interface, channel)
+    except Exception:
+        set_managed(interface)
+        raise
+    state = {"running": True, "interface": interface, "channel": channel, "started_at": time.time()}
+    save_state("monitor", state)
+    reply(**state)
+
+
+def monitor_disable() -> None:
+    state = load_state("monitor")
+    interface = str(state.get("interface", ""))
+    if IFACE_RE.fullmatch(interface):
+        set_managed(interface)
+    state.update(running=False, stopped_at=time.time())
+    save_state("monitor", state)
+    reply(**state)
+
+
+def monitor_status() -> None:
+    state = load_state("monitor")
+    reply(**({"running": False} if not state else state))
+
+
+def monitor_conflicts() -> None:
+    result = run([executable("airmon-ng"), "check"], timeout=8, check=False)
+    lines = sanitize_log_lines((result.stdout or "") + "\n" + (result.stderr or ""))[-40:]
+    reply(
+        available=True,
+        lines=lines,
+        conflicts_detected=any(line.strip() and not line.lower().startswith(("found", "pid")) for line in lines),
+        action_taken=False,
+        note="PinePi reports potential conflicts but never runs airmon-ng check kill automatically.",
+    )
+
+
+def _active_process(argv: list[str], log_path: Path) -> subprocess.Popen:
+    log_path.write_bytes(b"")
+    os.chmod(log_path, 0o600)
+    with log_path.open("ab", buffering=0) as log:
+        process = subprocess.Popen(
+            argv,
+            stdin=subprocess.DEVNULL,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+    time.sleep(0.15)
+    if process.poll() not in (None, 0):
+        raise HelperError(f"Active test failed to start: {recent_log(log_path) or f'exit status {process.returncode}'}")
+    return process
+
+
+def active_start(
+    kind: str,
+    interface: str,
+    channel_text: str,
+    bssid: str,
+    client_text: str,
+    bursts_text: str,
+    runtime_text: str,
+) -> None:
+    if kind not in {"deauth", "mdk4_deauth"}:
+        raise HelperError("Unsupported active test type")
+    interface = validate_interface(interface)
+    if not MAC_RE.fullmatch(bssid):
+        raise HelperError("Invalid target BSSID")
+    client = "" if client_text == "-" else client_text
+    if client and not MAC_RE.fullmatch(client):
+        raise HelperError("Invalid target client")
+    try:
+        channel, bursts, runtime_seconds = int(channel_text), int(bursts_text), int(runtime_text)
+    except ValueError as exc:
+        raise HelperError("Channel, burst count, and runtime must be integers") from exc
+    if not 1 <= channel <= 196:
+        raise HelperError("Channel must be between 1 and 196")
+    if not 1 <= bursts <= CFG["max_deauth_bursts"]:
+        raise HelperError("Deauthentication burst count exceeds the configured limit")
+    if not 1 <= runtime_seconds <= CFG["max_active_seconds"]:
+        raise HelperError("Active-test runtime exceeds the configured limit")
+    ensure_wireless_operation_idle()
+    monitor = load_state("monitor")
+    if monitor.get("running"):
+        raise HelperError("Disable manual monitor mode before starting an active test")
+    try:
+        set_monitor(interface, channel)
+        if kind == "deauth":
+            command = [
+                executable("timeout"), "--signal=TERM", "--kill-after=2s", f"{runtime_seconds}s",
+                executable("aireplay-ng"), "--deauth", str(bursts), "-a", bssid.upper(),
+            ]
+            if client:
+                command.extend(("-c", client.upper()))
+            command.append(interface)
+            executable_name, operation_type = "aireplay-ng", "DEAUTH_TEST"
+        else:
+            if client:
+                raise HelperError("MDK4 target mode does not accept a client address")
+            command = [
+                executable("timeout"), "--signal=TERM", "--kill-after=2s", f"{runtime_seconds}s",
+                executable("mdk4"), interface, "d", "-B", bssid.upper(),
+            ]
+            executable_name, operation_type = "mdk4", "MDK4_TEST"
+        process = _active_process(command, RUN_DIR / "active.log")
+    except Exception:
+        set_managed(interface)
+        raise
+    running = process.poll() is None
+    state = {
+        "running": running,
+        "pid": process.pid,
+        "executable": executable_name,
+        "type": operation_type,
+        "interface": interface,
+        "channel": channel,
+        "bssid": bssid.upper(),
+        "client": client.upper(),
+        "bursts": bursts,
+        "runtime_seconds": runtime_seconds,
+        "started_at": time.time(),
+        "deadline": time.time() + runtime_seconds,
+        "exit_code": process.poll(),
+    }
+    if not running:
+        state["stopped_at"] = time.time()
+        set_managed(interface)
+        state["interface_restored"] = True
+    save_state("active", state)
+    reply(**state)
+
+
+def active_details(state: dict) -> dict:
+    if not state:
+        return {"running": False, "type": "", "elapsed_seconds": 0}
+    expected = str(state.get("executable", "aireplay-ng"))
+    running = process_alive(state.get("pid"), expected)
+    if running and time.time() >= float(state.get("deadline", 0)):
+        terminate(state.get("pid"), expected)
+        running = False
+        state["stop_reason"] = "runtime limit reached"
+    if state.get("running") and not running:
+        interface = str(state.get("interface", ""))
+        if IFACE_RE.fullmatch(interface) and not state.get("interface_restored"):
+            set_managed(interface)
+            state["interface_restored"] = True
+        state.update(running=False, stopped_at=time.time())
+        state["stop_reason"] = state.get("stop_reason") or "active-test process exited"
+        save_state("active", state)
+    state["running"] = running
+    end = time.time() if running else float(state.get("stopped_at", time.time()))
+    state["elapsed_seconds"] = max(0, int(end - float(state.get("started_at", end))))
+    state["recent_output"] = recent_log(RUN_DIR / "active.log")
+    return state
+
+
+def active_status() -> None:
+    reply(**active_details(load_state("active")))
+
+
+def active_stop() -> None:
+    state = load_state("active")
+    terminate(state.get("pid"), str(state.get("executable", "aireplay-ng")))
+    interface = str(state.get("interface", ""))
+    if IFACE_RE.fullmatch(interface) and not state.get("interface_restored"):
+        set_managed(interface)
+        state["interface_restored"] = True
+    state.update(running=False, stopped_at=time.time(), stop_reason="stopped by user")
+    save_state("active", state)
+    reply(**active_details(state))
+
+
+def injection_test(interface: str, channel_text: str, bssid: str) -> None:
+    interface = validate_interface(interface)
+    if not MAC_RE.fullmatch(bssid):
+        raise HelperError("Invalid target BSSID")
+    try:
+        channel = int(channel_text)
+    except ValueError as exc:
+        raise HelperError("Invalid injection-test channel") from exc
+    if not 1 <= channel <= 196:
+        raise HelperError("Injection-test channel must be between 1 and 196")
+    ensure_wireless_operation_idle()
+    if load_state("monitor").get("running"):
+        raise HelperError("Disable manual monitor mode before running an injection test")
+    try:
+        set_monitor(interface, channel)
+        result = run(
+            [executable("aireplay-ng"), "--test", "-a", bssid.upper(), interface],
+            timeout=min(30, CFG["max_active_seconds"]),
+            check=False,
+        )
+    finally:
+        set_managed(interface)
+    output = sanitize_log_lines((result.stdout or "") + "\n" + (result.stderr or ""))
+    combined = " ".join(output).lower()
+    supported = "injection is working" in combined
+    reply(
+        supported=supported,
+        status="INJECTION_SUPPORTED" if supported else "INJECTION_UNSUPPORTED",
+        explanation="Injection supported" if supported else "No confirmed injection response; the driver or target may not support this diagnostic reliably",
+        output=output[-12:],
+        exit_code=result.returncode,
+    )
 
 
 def validate_ap_network(label: str, address: str, gateway_text: str, start_text: str, end_text: str, country: str) -> None:
@@ -719,6 +965,7 @@ LOG_FILES = {
     "training_dnsmasq": RUN_DIR / "training" / "dnsmasq.log",
     "recon": RUN_DIR / "recon.log",
     "capture": RUN_DIR / "capture.log",
+    "active": RUN_DIR / "active.log",
 }
 
 
@@ -878,6 +1125,15 @@ def parser() -> argparse.ArgumentParser:
     commands.add_parser("ap-credentials")
     commands.add_parser("management-start"); commands.add_parser("management-stop"); commands.add_parser("management-status")
     log = commands.add_parser("logs"); log.add_argument("source")
+    monitor = commands.add_parser("monitor-enable"); monitor.add_argument("interface"); monitor.add_argument("channel", nargs="?", default="")
+    commands.add_parser("monitor-disable"); commands.add_parser("monitor-status")
+    commands.add_parser("monitor-conflicts")
+    active = commands.add_parser("active-start")
+    active.add_argument("type"); active.add_argument("interface"); active.add_argument("channel")
+    active.add_argument("bssid"); active.add_argument("client"); active.add_argument("bursts"); active.add_argument("runtime")
+    commands.add_parser("active-stop"); commands.add_parser("active-status")
+    injection = commands.add_parser("injection-test")
+    injection.add_argument("interface"); injection.add_argument("channel"); injection.add_argument("bssid")
     return value
 
 
@@ -895,6 +1151,12 @@ def main() -> int:
         "management-start": management_start_safe, "management-stop": management_stop,
         "management-status": management_status,
         "logs": lambda: logs(args.source),
+        "monitor-enable": lambda: monitor_enable(args.interface, args.channel),
+        "monitor-disable": monitor_disable, "monitor-status": monitor_status,
+        "monitor-conflicts": monitor_conflicts,
+        "active-start": lambda: active_start(args.type, args.interface, args.channel, args.bssid, args.client, args.bursts, args.runtime),
+        "active-stop": active_stop, "active-status": active_status,
+        "injection-test": lambda: injection_test(args.interface, args.channel, args.bssid),
     }
     actions[args.action]()
     return 0

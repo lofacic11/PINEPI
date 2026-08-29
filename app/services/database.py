@@ -6,7 +6,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 3
 
 
 class Database:
@@ -91,8 +91,31 @@ class Database:
                     pid INTEGER, error_code TEXT NOT NULL DEFAULT '', error_message TEXT NOT NULL DEFAULT ''
                 );
                 CREATE INDEX IF NOT EXISTS idx_operations_started ON operations(started_at DESC);
+
+                CREATE TABLE IF NOT EXISTS capture_metadata(
+                    filename TEXT PRIMARY KEY, created_at REAL NOT NULL, engine TEXT NOT NULL DEFAULT 'dumpcap',
+                    ssid TEXT NOT NULL DEFAULT '', bssid TEXT NOT NULL DEFAULT '', client TEXT NOT NULL DEFAULT '',
+                    channel INTEGER, operation_id TEXT NOT NULL DEFAULT ''
+                );
+
+                CREATE TABLE IF NOT EXISTS analysis_results(
+                    id TEXT PRIMARY KEY, filename TEXT NOT NULL, engine TEXT NOT NULL,
+                    created_at TEXT NOT NULL, status TEXT NOT NULL, result_json TEXT NOT NULL DEFAULT '{}'
+                );
+                CREATE INDEX IF NOT EXISTS idx_analysis_capture ON analysis_results(filename,created_at DESC);
                 """
             )
+            columns = {row[1] for row in db.execute("PRAGMA table_info(operations)")}
+            for name, declaration in (
+                ("owner", "TEXT NOT NULL DEFAULT 'pinepi-web'"),
+                ("adapter", "TEXT NOT NULL DEFAULT ''"),
+                ("target_json", "TEXT NOT NULL DEFAULT '{}'"),
+                ("exit_code", "INTEGER"),
+                ("artifacts_json", "TEXT NOT NULL DEFAULT '[]'"),
+            ):
+                if name not in columns:
+                    db.execute(f"ALTER TABLE operations ADD COLUMN {name} {declaration}")
+            db.execute("UPDATE schema_meta SET version=?", (SCHEMA_VERSION,))
 
     def execute(self, sql: str, parameters: tuple = ()) -> None:
         with self._lock, self.connect() as db:

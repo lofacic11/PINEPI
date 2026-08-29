@@ -1,4 +1,9 @@
-from pydantic import BaseModel, Field, ValidationInfo, field_validator
+from typing import Literal
+
+from pydantic import BaseModel, Field, ValidationInfo, field_validator, model_validator
+
+
+MAC_PATTERN = r"(?i)^[0-9a-f]{2}(?::[0-9a-f]{2}){5}$"
 
 
 class ScanTarget(BaseModel):
@@ -44,3 +49,50 @@ class TrustedProfileRequest(BaseModel):
         if any(ord(char) < 32 or ord(char) == 127 for char in value):
             raise ValueError("control characters are not allowed")
         return value
+
+
+class AuthorizedWirelessRequest(BaseModel):
+    ssid: str = Field(default="", max_length=32)
+    bssid: str = Field(pattern=MAC_PATTERN)
+    channel: int = Field(ge=1, le=196)
+    authorized: Literal[True]
+
+    @field_validator("ssid")
+    @classmethod
+    def safe_observed_ssid(cls, value: str) -> str:
+        if any(ord(char) < 32 or ord(char) == 127 for char in value) or len(value.encode("utf-8")) > 32:
+            raise ValueError("SSID must be at most 32 UTF-8 bytes without control characters")
+        return value
+
+
+class DeauthTestRequest(AuthorizedWirelessRequest):
+    client: str | None = Field(default=None, pattern=MAC_PATTERN)
+    bursts: int = Field(default=8, ge=1, le=128)
+    runtime_seconds: int = Field(default=15, ge=1, le=60)
+
+    @model_validator(mode="after")
+    def normalize_addresses(self):
+        self.bssid = self.bssid.upper()
+        if self.client:
+            self.client = self.client.upper()
+        return self
+
+
+class InjectionTestRequest(AuthorizedWirelessRequest):
+    @model_validator(mode="after")
+    def normalize_bssid(self):
+        self.bssid = self.bssid.upper()
+        return self
+
+
+class Mdk4DeauthTestRequest(AuthorizedWirelessRequest):
+    runtime_seconds: int = Field(default=10, ge=1, le=60)
+
+    @model_validator(mode="after")
+    def normalize_bssid(self):
+        self.bssid = self.bssid.upper()
+        return self
+
+
+class MonitorModeRequest(BaseModel):
+    channel: int | None = Field(default=None, ge=1, le=196)

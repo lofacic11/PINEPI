@@ -26,6 +26,20 @@ class ReconConfig:
     )
     mock_mode: bool = False
     mock_scenario: str = "normal"
+    engine: str = "auto"
+
+
+@dataclass(frozen=True)
+class ActiveTestConfig:
+    max_runtime_seconds: int = 30
+    max_deauth_bursts: int = 32
+
+
+@dataclass(frozen=True)
+class AnalysisConfig:
+    max_input_mb: int = 2048
+    max_packets: int = 50000
+    max_result_rows: int = 1000
 
 
 @dataclass(frozen=True)
@@ -66,6 +80,8 @@ class AppConfig:
     ap: APConfig = field(default_factory=APConfig)
     management_ap: ManagementAPConfig = field(default_factory=ManagementAPConfig)
     recon: ReconConfig = field(default_factory=ReconConfig)
+    active_tests: ActiveTestConfig = field(default_factory=ActiveTestConfig)
+    analysis: AnalysisConfig = field(default_factory=AnalysisConfig)
     adapters: AdapterPreference = field(default_factory=AdapterPreference)
     helper: str = "/usr/local/sbin/pinepi-helper"
     sudo: bool = True
@@ -90,6 +106,8 @@ def load_config(path: str | Path | None = None) -> AppConfig:
     adapters = raw.get("adapters", {})
     runtime = raw.get("runtime", {})
     recon = raw.get("recon", {})
+    active_tests = raw.get("active_tests", {})
+    analysis = raw.get("analysis", {})
     defaults = AppConfig()
     result = AppConfig(
         storage=StorageConfig(
@@ -127,6 +145,16 @@ def load_config(path: str | Path | None = None) -> AppConfig:
             oui_paths=tuple(Path(item) for item in recon.get("oui_paths", defaults.recon.oui_paths)),
             mock_mode=bool(recon.get("mock_mode", defaults.recon.mock_mode)),
             mock_scenario=str(recon.get("mock_scenario", defaults.recon.mock_scenario)),
+            engine=str(recon.get("engine", defaults.recon.engine)).lower(),
+        ),
+        active_tests=ActiveTestConfig(
+            max_runtime_seconds=min(60, max(1, int(active_tests.get("max_runtime_seconds", defaults.active_tests.max_runtime_seconds)))),
+            max_deauth_bursts=min(128, max(1, int(active_tests.get("max_deauth_bursts", defaults.active_tests.max_deauth_bursts)))),
+        ),
+        analysis=AnalysisConfig(
+            max_input_mb=min(20480, max(1, int(analysis.get("max_input_mb", defaults.analysis.max_input_mb)))),
+            max_packets=min(250000, max(100, int(analysis.get("max_packets", defaults.analysis.max_packets)))),
+            max_result_rows=min(10000, max(10, int(analysis.get("max_result_rows", defaults.analysis.max_result_rows)))),
         ),
         adapters=AdapterPreference(
             management_interfaces=_tuple(adapters.get("management_interfaces"), defaults.adapters.management_interfaces),
@@ -149,4 +177,6 @@ def load_config(path: str | Path | None = None) -> AppConfig:
         raise ValueError("management_ap.channel must be between 1 and 13")
     if result.recon.mock_scenario not in {"normal", "empty", "failure", "missing_adapter"}:
         raise ValueError("recon.mock_scenario must be normal, empty, failure, or missing_adapter")
+    if result.recon.engine not in {"auto", "airodump", "kismet"}:
+        raise ValueError("recon.engine must be auto, airodump, or kismet")
     return result

@@ -88,6 +88,14 @@ def test_helper_rejects_unregistered_log_source():
         HELPER["logs"]("/etc/shadow")
 
 
+def test_helper_has_no_arbitrary_command_action():
+    with pytest.raises(SystemExit):
+        HELPER["parser"]().parse_args(["exec", "id"])
+    source = __import__("pathlib").Path("scripts/pinepi-helper").read_text()
+    assert "shell=True" not in source
+    assert "os.system" not in source
+
+
 def test_training_cleanup_restores_owned_resources(monkeypatch):
     globals_ = HELPER["cleanup_ap_runtime"].__globals__
     calls = []

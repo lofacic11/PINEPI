@@ -10,7 +10,7 @@ CSS = (ROOT / "app/static/css/app.css").read_text()
 def test_appliance_shell_sidebar_and_accessibility_contract():
     pages = (
         "Dashboard", "Campaigns / Audits", "Access Point", "Recon", "Logging", "Modules",
-        "Captures", "Wireless Tools", "Packet Capture", "Diagnostics / Console", "Reports", "Settings",
+        "Captures", "Wireless Tools", "Security Analysis", "Packet Capture", "Diagnostics / Console", "Reports", "Settings",
     )
     for page in pages:
         assert page in TEMPLATE
@@ -44,3 +44,20 @@ def test_lab_password_is_visible_and_copy_has_http_fallback():
     assert "fallback.select()" in JAVASCRIPT
     assert "console.log" not in JAVASCRIPT
     assert "this is not the original network password" in TEMPLATE
+
+
+def test_active_test_ux_is_explicit_targeted_and_stoppable():
+    assert 'id="active-authorized" type="checkbox" required' in TEMPLATE
+    assert 'id="start-deauth"' in TEMPLATE
+    assert 'id="start-mdk4"' in TEMPLATE
+    assert 'id="stop-active"' in TEMPLATE
+    assert "ACTIVE WIRELESS TEST" in JAVASCRIPT
+    assert "Entire selected BSSID" in JAVASCRIPT
+    assert 'headers["X-PinePi-Action"] = "confirmed"' in JAVASCRIPT
+    assert "Custom aireplay" not in TEMPLATE
+    assert "command" not in TEMPLATE.lower() or "arbitrary commands" in TEMPLATE.lower()
+
+
+def test_capture_analysis_and_security_pages_are_present():
+    for text in ("Frame Explorer", "Suricata IDS", "Zeek traffic summary", "Aircrack compatibility", "Rogue AP detection"):
+        assert text in TEMPLATE or text in JAVASCRIPT

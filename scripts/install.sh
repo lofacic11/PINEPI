@@ -10,7 +10,25 @@ PROJECT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 export DEBIAN_FRONTEND=noninteractive
 
 apt-get update
-apt-get install -y python3 python3-venv iw aircrack-ng tshark hostapd dnsmasq nftables sudo
+REQUIRED_PACKAGES=(python3 python3-venv iw aircrack-ng tshark wireshark-common hostapd dnsmasq nftables sudo)
+apt-get install -y "${REQUIRED_PACKAGES[@]}"
+
+if [[ -r /etc/os-release ]]; then
+  # shellcheck disable=SC1091
+  source /etc/os-release
+  echo "Detected distribution: ${PRETTY_NAME:-${ID:-unknown} ${VERSION_ID:-}}"
+fi
+
+# These engines are registered dynamically and remain optional because Debian
+# and Raspberry Pi OS package availability differs by release and architecture.
+OPTIONAL_PACKAGES=(kismet hcxdumptool hcxtools python3-scapy mdk4 suricata zeek bettercap)
+for package in "${OPTIONAL_PACKAGES[@]}"; do
+  if apt-cache show "$package" >/dev/null 2>&1; then
+    apt-get install -y "$package" || echo "Warning: optional module package '$package' could not be installed." >&2
+  else
+    echo "Optional module package '$package' is not available from configured repositories." >&2
+  fi
+done
 # Optional offline vendor names. Recon remains functional with Unknown vendors if unavailable.
 apt-get install -y ieee-data || echo "Warning: optional ieee-data OUI dataset is unavailable." >&2
 
@@ -48,5 +66,14 @@ if ! systemctl restart pinepi-management-ap.service; then
   echo "Check: journalctl -u pinepi-management-ap.service -n 50" >&2
 fi
 systemctl restart pinepi.service
+
+echo "Detected PinePi tool engines:"
+for tool in aircrack-ng airmon-ng airodump-ng aireplay-ng airdecap-ng dumpcap tshark kismet hcxdumptool hcxpcapngtool mdk4 bettercap suricata zeek; do
+  if command -v "$tool" >/dev/null 2>&1; then
+    echo "  READY   $tool"
+  else
+    echo "  MISSING $tool (optional unless documented as core)"
+  fi
+done
 
 echo "PinePi installed. Open http://$(hostname -I | awk '{print $1}'):8000"

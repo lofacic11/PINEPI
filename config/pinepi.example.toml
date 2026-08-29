@@ -14,6 +14,19 @@ oui_paths = ["/usr/share/ieee-data/oui.txt", "/usr/share/misc/oui.txt"]
 # Development only. Production never silently falls back to fixtures.
 mock_mode = false
 mock_scenario = "normal" # normal, empty, failure, or missing_adapter
+# auto deterministically selects PinePi/airodump until a Kismet API source is configured.
+engine = "auto" # auto, airodump, or kismet
+
+[active_tests]
+# Hard safety ceilings; individual requests may choose smaller values.
+max_runtime_seconds = 30
+max_deauth_bursts = 32
+
+[analysis]
+# Opening the UI never bypasses these offline-analysis limits.
+max_input_mb = 2048
+max_packets = 50000
+max_result_rows = 1000
 
 [management_ap]
 enabled = true

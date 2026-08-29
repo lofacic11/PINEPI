@@ -5,7 +5,7 @@ from app.services.database import Database, SCHEMA_VERSION
 from app.services.mock_data import MOCK_APS, MOCK_CLIENTS
 from app.services.process_manager import OperationBusy, ProcessManager
 from app.services.recon import ReconService
-from app.services.recon_parser import normalize_mac, parse_airodump
+from app.services.recon_parser import normalize_mac, parse_airodump, safe_wireless_text
 from app.services.vendor import VendorLookup
 
 
@@ -42,6 +42,23 @@ def test_database_schema_and_parser_tolerate_malformed_rows(tmp_path):
     assert len(aps[0]["ssid"]) <= 32
     assert clients[0]["relationship"] == "unassociated"
     assert normalize_mac("aa:bb:cc:dd:ee:ff") == "AA:BB:CC:DD:EE:FF"
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "<script>alert(1)</script>",
+        'quotes " and \' plus \\\\',
+        "line\nbreak",
+        "Café 📡 network",
+        "x" * 500,
+        "📡" * 40,
+    ],
+)
+def test_hostile_wireless_text_is_control_free_and_utf8_bounded(value):
+    result = safe_wireless_text(value, 32)
+    assert len(result.encode("utf-8")) <= 32
+    assert "\n" not in result
 
 
 @pytest.mark.asyncio

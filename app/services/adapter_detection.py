@@ -20,6 +20,10 @@ class Adapter:
     is_internal: bool = False
     supports_ap: bool = False
     supports_monitor: bool = False
+    supported_channels: tuple[int, ...] = ()
+    disabled_channels: tuple[int, ...] = ()
+    no_ir_channels: tuple[int, ...] = ()
+    dfs_channels: tuple[int, ...] = ()
     role: str = "unassigned"
     role_reason: str = "No matching role rule"
 
@@ -64,17 +68,36 @@ def _is_internal(device_path: str, driver: str, usb_id: str, config: AppConfig) 
     )
 
 
-async def _capabilities(phy: str) -> tuple[bool, bool]:
+def parse_phy_info(text: str) -> tuple[bool, bool, tuple[int, ...], tuple[int, ...], tuple[int, ...], tuple[int, ...]]:
+    modes = text.split("Supported interface modes:", 1)[-1]
+    supports_ap = bool(re.search(r"^\s*\*\s+AP\s*$", modes, re.MULTILINE))
+    supports_monitor = bool(re.search(r"^\s*\*\s+monitor\s*$", modes, re.MULTILINE))
+    supported, disabled, no_ir, dfs = [], [], [], []
+    for line in text.splitlines():
+        match = re.search(r"\*\s+\d+\s+MHz\s+\[(\d+)\]", line)
+        if not match:
+            continue
+        channel = int(match.group(1))
+        lowered = line.lower()
+        if "disabled" in lowered:
+            disabled.append(channel)
+        else:
+            supported.append(channel)
+        if "no ir" in lowered or "no-ir" in lowered:
+            no_ir.append(channel)
+        if "radar detection" in lowered or "dfs" in lowered:
+            dfs.append(channel)
+    return supports_ap, supports_monitor, tuple(supported), tuple(disabled), tuple(no_ir), tuple(dfs)
+
+
+async def _capabilities(phy: str) -> tuple[bool, bool, tuple[int, ...], tuple[int, ...], tuple[int, ...], tuple[int, ...]]:
     if not phy:
-        return False, False
+        return False, False, (), (), (), ()
     try:
         result = await run_command("iw", "phy", phy, "info", timeout=4)
     except CommandError:
-        return False, False
-    modes = result.stdout.split("Supported interface modes:", 1)[-1]
-    return bool(re.search(r"^\s*\*\s+AP\s*$", modes, re.MULTILINE)), bool(
-        re.search(r"^\s*\*\s+monitor\s*$", modes, re.MULTILINE)
-    )
+        return False, False, (), (), (), ()
+    return parse_phy_info(result.stdout)
 
 
 def _assign_roles(adapters: list[Adapter], config: AppConfig) -> None:
@@ -127,7 +150,14 @@ async def detect_adapters(config: AppConfig) -> list[dict]:
             device_path=_device_path(device),
         )
         item.is_internal = _is_internal(item.device_path, item.driver, item.usb_id, config)
-        item.supports_ap, item.supports_monitor = await _capabilities(phy)
+        (
+            item.supports_ap,
+            item.supports_monitor,
+            item.supported_channels,
+            item.disabled_channels,
+            item.no_ir_channels,
+            item.dfs_channels,
+        ) = await _capabilities(phy)
         items.append(item)
     _assign_roles(items, config)
     return [asdict(item) for item in items]

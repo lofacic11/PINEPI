@@ -12,7 +12,9 @@ MAC = re.compile(r"(?i)^[0-9a-f]{2}(?::[0-9a-f]{2}){5}$")
 
 def safe_wireless_text(value: str, limit: int) -> str:
     """Keep radio metadata displayable and harmless in logs/JSON."""
-    return "".join(char if ord(char) >= 32 and ord(char) != 127 else "�" for char in value).strip()[:limit]
+    cleaned = "".join(char if ord(char) >= 32 and ord(char) != 127 else "�" for char in value).strip()
+    encoded = cleaned.encode("utf-8")[:limit]
+    return encoded.decode("utf-8", errors="ignore")
 
 
 def normalize_mac(value: str) -> str | None:

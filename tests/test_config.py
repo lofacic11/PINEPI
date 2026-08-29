@@ -1,3 +1,5 @@
+import pytest
+
 from app.config import load_config
 
 
@@ -21,6 +23,15 @@ def test_recon_retention_and_mock_scenario(tmp_path):
     assert value.recon.max_signal_samples_per_ap == 3
     assert value.recon.mock_mode is True
     assert value.recon.mock_scenario == "empty"
+
+
+def test_recon_engine_is_explicitly_validated(tmp_path):
+    path = tmp_path / "pinepi.toml"
+    path.write_text('[recon]\nengine="kismet"\n')
+    assert load_config(path).recon.engine == "kismet"
+    path.write_text('[recon]\nengine="silent-fallback"\n')
+    with pytest.raises(ValueError, match="recon.engine"):
+        load_config(path)
 
 
 def test_management_ap_configuration(tmp_path):

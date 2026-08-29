@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import shutil
-from pathlib import Path
 from typing import Literal
 
 from fastapi import APIRouter, Request
@@ -17,6 +15,7 @@ LogSource = Literal[
     "training_dnsmasq",
     "recon",
     "capture",
+    "active",
 ]
 
 
@@ -52,8 +51,18 @@ async def settings(request: Request) -> dict:
             "max_age_days": config.recon.max_age_days,
             "max_signal_samples_per_ap": config.recon.max_signal_samples_per_ap,
             "mock_mode": config.recon.mock_mode,
+            "engine": config.recon.engine,
         },
         "capture": {"max_capture_mb": config.storage.max_capture_mb},
+        "active_tests": {
+            "max_runtime_seconds": config.active_tests.max_runtime_seconds,
+            "max_deauth_bursts": config.active_tests.max_deauth_bursts,
+        },
+        "analysis": {
+            "max_input_mb": config.analysis.max_input_mb,
+            "max_packets": config.analysis.max_packets,
+            "max_result_rows": config.analysis.max_result_rows,
+        },
         "adapters": {
             "management_interfaces": config.adapters.management_interfaces,
             "audit_usb_ids": config.adapters.audit_usb_ids,
@@ -63,29 +72,5 @@ async def settings(request: Request) -> dict:
 
 
 @router.get("/modules")
-async def modules(request: Request) -> dict:
-    config = request.app.state.config
-    system = await request.app.state.system_service.status()
-    roles = {item.get("role") for item in system.get("interfaces", [])}
-    definitions = [
-        ("Recon", "airodump-ng", "audit", True),
-        ("Packet Capture", "dumpcap", "audit", True),
-        ("Training AP", "hostapd", "training_ap", True),
-        ("DHCP/DNS", "dnsmasq", "training_ap", True),
-        ("Audit Engine", None, None, True),
-        ("Vendor Lookup", None, None, any(Path(path).is_file() for path in config.recon.oui_paths)),
-        ("Reports", None, None, False),
-    ]
-    items = []
-    for name, dependency, role, implemented in definitions:
-        dependency_ok = not dependency or shutil.which(dependency) is not None
-        adapter_ok = not role or role in roles
-        items.append({
-            "name": name,
-            "enabled": implemented,
-            "available": implemented and dependency_ok and adapter_ok,
-            "dependency": dependency or "Built in",
-            "adapter_required": role or "None",
-            "reason": "Ready" if implemented and dependency_ok and adapter_ok else "Planned" if not implemented else "Missing dependency or adapter",
-        })
-    return {"items": items}
+async def modules(request: Request, refresh: bool = False) -> dict:
+    return await request.app.state.capabilities.status(refresh=refresh)

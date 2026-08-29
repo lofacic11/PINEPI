@@ -29,6 +29,8 @@ class ReconService:
         self._mock_tick = 0
 
     async def start(self) -> dict:
+        if not self.config.recon.mock_mode and self.config.recon.engine == "kismet":
+            raise RuntimeError("TOOL_VERSION_UNSUPPORTED: Kismet API ingestion is not configured; select auto or airodump")
         adapters = await detect_adapters(self.config)
         interface = "mock-audit0" if self.config.recon.mock_mode else interface_for_role(adapters, "audit")
         operation_id = await self.operations.acquire("recon", "audit_adapter")

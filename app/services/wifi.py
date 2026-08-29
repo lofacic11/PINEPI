@@ -42,6 +42,7 @@ class SystemService:
                 "current_time": time.time(),
                 "service_ready": True,
                 "interfaces": adapters,
+                "regulatory": await self._regulatory(),
             }
             self._cache = (now, result)
             return result
@@ -72,3 +73,12 @@ class SystemService:
         item["channel"] = int(channel_match.group(1)) if channel_match else None
         item["tx_power_dbm"] = float(tx_match.group(1)) if tx_match else None
         item["ssid"] = ssid_match.group(1).strip() if ssid_match else ""
+
+    @staticmethod
+    async def _regulatory() -> dict:
+        try:
+            result = await run_command("iw", "reg", "get", timeout=4, check=False)
+        except CommandError:
+            return {"country": "Unknown", "available": False}
+        countries = re.findall(r"^country\s+([A-Z0-9]{2}):", result.stdout, re.MULTILINE)
+        return {"country": countries[0] if countries else "Unknown", "domains": countries, "available": result.returncode == 0}

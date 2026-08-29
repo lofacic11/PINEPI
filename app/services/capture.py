@@ -7,6 +7,7 @@ from pathlib import Path
 
 from app.config import AppConfig
 from app.services.adapter_detection import detect_adapters, interface_for_role
+from app.services.database import Database
 from app.services.helper import HelperClient
 from app.services.process_manager import ProcessManager
 
@@ -15,8 +16,9 @@ SAFE_CAPTURE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\.pcapng$")
 
 
 class CaptureService:
-    def __init__(self, config: AppConfig, helper: HelperClient, processes: ProcessManager):
+    def __init__(self, config: AppConfig, helper: HelperClient, processes: ProcessManager, database: Database | None = None):
         self.config, self.helper, self.processes = config, helper, processes
+        self.database = database
         self._cache: tuple[float, dict] | None = None
         self._lock = asyncio.Lock()
         self._operation_id: str | None = None
@@ -49,6 +51,21 @@ class CaptureService:
                 self.processes.attach_pid(operation_id, result.get("pid"))
                 result["target"] = self._target
                 result["operation_id"] = operation_id
+                if self.database and result.get("filename"):
+                    self.database.execute(
+                        "INSERT OR REPLACE INTO capture_metadata(filename,created_at,engine,ssid,bssid,client,channel,operation_id) VALUES(?,?,?,?,?,?,?,?)",
+                        (
+                            result["filename"],
+                            time.time(),
+                            "dumpcap",
+                            str((self._target or {}).get("ssid", ""))[:128],
+                            str((self._target or {}).get("bssid", ""))[:17],
+                            str((self._target or {}).get("client", ""))[:17],
+                            channel,
+                            operation_id,
+                        ),
+                    )
+                    self.processes.attach_artifact(operation_id, str(result["filename"]))
                 return result
             except Exception as exc:
                 self.processes.finish(operation_id, "failed", str(exc))
@@ -91,7 +108,8 @@ class CaptureService:
         for path in root.glob("*.pcapng"):
             try:
                 stat = path.stat()
-                result.append({"filename": path.name, "size": stat.st_size, "created": stat.st_mtime})
+                metadata = self.database.one("SELECT * FROM capture_metadata WHERE filename=?", (path.name,)) if self.database else None
+                result.append({"filename": path.name, "size": stat.st_size, "created": stat.st_mtime, **(metadata or {})})
             except OSError:
                 continue
         return sorted(result, key=lambda item: item["created"], reverse=True)
@@ -107,4 +125,8 @@ class CaptureService:
 
     async def delete(self, filename: str) -> dict:
         self.resolve(filename)
-        return await self.helper.call("capture-delete", filename)
+        result = await self.helper.call("capture-delete", filename)
+        if self.database:
+            self.database.execute("DELETE FROM capture_metadata WHERE filename=?", (filename,))
+            self.database.execute("DELETE FROM analysis_results WHERE filename=?", (filename,))
+        return result

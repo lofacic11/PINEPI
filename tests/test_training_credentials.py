@@ -56,3 +56,6 @@ def test_ap_request_validates_utf8_byte_lengths_and_controls():
         APStartRequest(ssid="Lab\nInjected", password="safe-passphrase", channel=6)
     with pytest.raises(ValidationError):
         APStartRequest(ssid="Lab", password="x" * 64, channel=6)
+    for ssid in ('<script>alert(1)</script>', 'Lab "quoted" \\ name', "Lab 📡"):
+        request = APStartRequest(ssid=ssid, password="safe-passphrase", channel=6)
+        assert request.ssid == ssid

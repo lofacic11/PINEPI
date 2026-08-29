@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 from dataclasses import dataclass
+from pathlib import Path
 
 
 class CommandError(RuntimeError):
@@ -17,7 +18,11 @@ class CommandResult:
 
 
 async def run_command(
-    *argv: str, timeout: float = 10.0, check: bool = True, input_text: str | None = None
+    *argv: str,
+    timeout: float = 10.0,
+    check: bool = True,
+    input_text: str | None = None,
+    cwd: str | Path | None = None,
 ) -> CommandResult:
     try:
         process = await asyncio.create_subprocess_exec(
@@ -25,6 +30,7 @@ async def run_command(
             stdin=asyncio.subprocess.PIPE if input_text is not None else None,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            cwd=str(cwd) if cwd is not None else None,
         )
     except FileNotFoundError as exc:
         raise CommandError(f"Required executable not found: {argv[0]}") from exc
