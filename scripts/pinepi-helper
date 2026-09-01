@@ -42,8 +42,14 @@ class HelperError(RuntimeError):
 def config() -> dict:
     raw: dict = {}
     if CONFIG_PATH.is_file():
-        with CONFIG_PATH.open("rb") as handle:
-            raw = tomllib.load(handle)
+        try:
+            with CONFIG_PATH.open("rb") as handle:
+                raw = tomllib.load(handle)
+        except OSError:
+            # Unit tests import this helper as an unprivileged user.  The real
+            # command still enforces root in main(), so inaccessible config
+            # cannot be used to perform an operation.
+            raw = {}
     storage = raw.get("storage", {})
     ap = raw.get("training_ap", {})
     management = raw.get("management_ap", {})
