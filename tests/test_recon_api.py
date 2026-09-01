@@ -28,9 +28,10 @@ async def test_recon_api_validation_pagination_privacy_and_static_assets(tmp_pat
     operations = ProcessManager(database)
     app.state.recon = ReconService(config, NoHelper(), database, operations)
     app.state.processes = operations
-    transport = httpx.ASGITransport(app=app)
+    transport = httpx.ASGITransport(app=app, client=("127.0.0.1", 1234))
+    headers = {"X-PinePi-Action": "confirmed"}
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        started = await client.post("/api/recon/sessions")
+        started = await client.post("/api/recon/sessions", headers=headers)
         assert started.status_code == 201
         session_id = started.json()["id"]
         result = await client.get("/api/recon/access-points", params={"session_id": session_id, "limit": 2})
@@ -45,7 +46,7 @@ async def test_recon_api_validation_pagination_privacy_and_static_assets(tmp_pat
         assert page.status_code == 200
         assert page.headers["x-frame-options"] == "DENY"
         assert "CHANGE-ME" not in page.text
-        await client.post(f"/api/recon/sessions/{session_id}/stop")
+        await client.post(f"/api/recon/sessions/{session_id}/stop", headers=headers)
 
 
 async def _status(client, path, **params):

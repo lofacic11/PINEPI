@@ -8,6 +8,7 @@ boundary.
 from __future__ import annotations
 
 import argparse
+import errno
 import ipaddress
 import json
 import os
@@ -16,11 +17,15 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
+import threading
 import time
 import tomllib
 from pathlib import Path
 
 RUN_DIR = Path("/run/pinepi")
+MAX_LOG_BYTES = 1024 * 1024
+MIN_FREE_BYTES = 64 * 1024 * 1024
 CONFIG_PATH = Path(os.environ.get("PINEPI_CONFIG", "/etc/pinepi/pinepi.toml"))
 IFACE_RE = re.compile(r"^[a-zA-Z0-9_.-]{1,15}$")
 CAPTURE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\.pcapng$")
@@ -121,11 +126,46 @@ def load_state(name: str) -> dict:
 
 def save_state(name: str, value: dict) -> None:
     target = state_path(name)
-    target.parent.mkdir(parents=True, exist_ok=True, mode=0o755)
-    temporary = target.parent / f".state.{os.getpid()}.tmp"
-    temporary.write_text(json.dumps(value, separators=(",", ":")))
-    os.chmod(temporary, 0o644)
-    os.replace(temporary, target)
+    temporary: Path | None = None
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True, mode=0o755)
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=target.parent, prefix=".state.", suffix=".tmp", delete=False
+        ) as handle:
+            temporary = Path(handle.name)
+            handle.write(json.dumps(value, separators=(",", ":")))
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temporary, 0o644)
+        os.replace(temporary, target)
+        temporary = None
+    except OSError as exc:
+        if exc.errno in (errno.ENOSPC, errno.EDQUOT):
+            raise HelperError("STORAGE_FULL: insufficient space for PinePi runtime state") from exc
+        raise HelperError(f"STATE_WRITE_FAILED: unable to save {name} runtime state") from exc
+    finally:
+        if temporary is not None:
+            with suppress_oserror():
+                temporary.unlink()
+
+
+def ensure_free_space(path: Path, required: int = MIN_FREE_BYTES) -> None:
+    try:
+        path.mkdir(parents=True, exist_ok=True, mode=0o755)
+        free = shutil.disk_usage(path).free
+    except OSError as exc:
+        raise HelperError("STORAGE_UNAVAILABLE: PinePi storage cannot be accessed") from exc
+    if free < required:
+        raise HelperError(f"STORAGE_FULL: only {free // (1024 * 1024)} MiB is free for PinePi")
+
+
+def clean_runtime_files() -> None:
+    """Remove only temporary state files; user captures are never touched."""
+    ensure_free_space(RUN_DIR, 64 * 1024)
+    for path in RUN_DIR.glob("**/.state.*.tmp"):
+        if path.is_file() and not path.is_symlink():
+            with suppress_oserror():
+                path.unlink()
 
 
 def process_alive(pid: object, expected: str) -> bool:
@@ -189,6 +229,8 @@ def set_managed(interface: str) -> None:
 
 def scan_start(interface: str) -> None:
     interface = validate_interface(interface)
+    clean_runtime_files()
+    ensure_free_space(CFG["scans"])
     ensure_idle("scan", "airodump-ng")
     capture = load_state("capture")
     if capture.get("running") and process_alive(capture.get("pid"), "dumpcap"):
@@ -251,6 +293,8 @@ def capture_start(interface: str, channel_text: str, max_mb_text: str) -> None:
         raise HelperError("Channel and size must be integers") from exc
     if not 1 <= channel <= 196 or not 1 <= max_mb <= 102400:
         raise HelperError("Channel or maximum capture size is out of range")
+    clean_runtime_files()
+    ensure_free_space(CFG["captures"], max_mb * 1024 * 1024 + MIN_FREE_BYTES)
     ensure_idle("capture", "dumpcap")
     scan = load_state("scan")
     if scan.get("running") and process_alive(scan.get("pid"), "airodump-ng"):
@@ -672,28 +716,62 @@ def recent_log(path: Path) -> str:
 
 
 def start_daemon(label: str, argv: list[str], log_path: Path, delay: float) -> subprocess.Popen:
+    log_path.parent.mkdir(parents=True, exist_ok=True, mode=0o755)
     log_path.write_bytes(b"")
     os.chmod(log_path, 0o600)
-    with log_path.open("ab", buffering=0) as log:
-        process = subprocess.Popen(
-            argv,
-            stdin=subprocess.DEVNULL,
-            stdout=log,
-            stderr=subprocess.STDOUT,
-            start_new_session=True,
-        )
+    process = subprocess.Popen(
+        argv,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+    )
+
+    def collect_output() -> None:
+        stream = process.stdout
+        if stream is None:
+            return
+        try:
+            with log_path.open("ab", buffering=0) as log:
+                while True:
+                    chunk = stream.read(4096)
+                    if not chunk:
+                        break
+                    if log.tell() + len(chunk) > MAX_LOG_BYTES:
+                        with log_path.open("rb") as existing:
+                            tail = existing.read()[-(MAX_LOG_BYTES // 2):]
+                        log.seek(0)
+                        log.truncate()
+                        log.write(b"[PinePi log truncated]\n" + tail)
+                    remaining = max(0, MAX_LOG_BYTES - log.tell())
+                    if remaining:
+                        log.write(chunk[:remaining])
+        except OSError:
+            pass
+
+    log_thread = threading.Thread(target=collect_output, name=f"pinepi-log-{label}", daemon=True)
+    log_thread.start()
     time.sleep(delay)
     if process.poll() is not None:
+        log_thread.join(timeout=1)
         reason = recent_log(log_path) or f"process exited with status {process.returncode}"
         raise HelperError(f"{label} failed to start: {reason}")
     return process
 
 
-def configure_ap_interface(interface: str, address: str) -> None:
+def reserve_management_interface(interface: str) -> None:
+    """Give only the configured management WLAN to hostapd."""
     nmcli = shutil.which("nmcli")
-    if nmcli:
-        run([nmcli, "device", "disconnect", interface], check=False)
-        run([nmcli, "device", "set", interface, "managed", "no"], check=False)
+    if not nmcli:
+        return
+    # Disconnecting drops a saved client connection; managed=no prevents
+    # NetworkManager from reconnecting it while hostapd owns the interface.
+    run([nmcli, "device", "disconnect", interface], check=False)
+    run([nmcli, "device", "set", interface, "managed", "no"], check=False)
+
+
+def configure_ap_interface(interface: str, address: str) -> None:
+    reserve_management_interface(interface)
     run([executable("iw"), "dev", interface, "disconnect"], check=False)
     run([executable("ip"), "link", "set", "dev", interface, "down"])
     run([executable("ip"), "addr", "flush", "dev", interface])
@@ -747,15 +825,37 @@ def detect_management_interface() -> str:
             or any(marker in device_path for marker in ("/platform/", "/mmc", "/soc/"))
         )
         candidates.append((path.name, driver, internal))
-    selected = next((name for name, _, internal in candidates if internal), None)
+    selected = next(
+        (name for name, _, _ in candidates if name in CFG["management_interfaces"] and not _usb_id(Path("/sys/class/net") / name / "device")),
+        None,
+    )
     if not selected:
-        selected = next(
-            (name for name, _, _ in candidates if name in CFG["management_interfaces"] and not _usb_id(Path("/sys/class/net") / name / "device")),
-            None,
-        )
+        selected = next((name for name, _, internal in candidates if internal), None)
     if not selected:
         raise HelperError("No internal non-USB Wi-Fi adapter is available for the management role")
     return validate_interface(selected)
+
+
+def verify_ap_capability(interface: str) -> None:
+    info = run([executable("iw"), "dev", interface, "info"], timeout=5)
+    match = re.search(r"\bwiphy\s+(\d+)", info.stdout)
+    if not match:
+        raise HelperError(f"Management interface {interface} has no identifiable Wi-Fi PHY")
+    phy = run([executable("iw"), "phy", f"phy{match.group(1)}", "info"], timeout=5)
+    modes = phy.stdout.split("Supported interface modes:", 1)[-1]
+    if not re.search(r"^\s*\*\s+AP\s*$", modes, re.MULTILINE):
+        raise HelperError(f"Management interface {interface} does not advertise AP mode")
+
+
+def wait_for_management_interface() -> str:
+    last_error = ""
+    for _ in range(20):
+        try:
+            return detect_management_interface()
+        except HelperError as exc:
+            last_error = str(exc)
+            time.sleep(0.5)
+    raise HelperError(f"Management Wi-Fi unavailable after boot wait: {last_error}")
 
 
 def parse_exclusions(value: str) -> set[str]:
@@ -806,6 +906,14 @@ def ap_start(interface: str, channel_text: str, excluded_text: str) -> None:
         "training", interface, ssid, password, channel, CFG["country"], CFG["address"],
         CFG["gateway"], CFG["dhcp_start"], CFG["dhcp_end"],
     )
+    hostapd_test = run([executable("hostapd"), "-t", str(hostapd_conf)], check=False)
+    if hostapd_test.returncode:
+        detail = (hostapd_test.stderr or hostapd_test.stdout).strip()
+        raise HelperError(f"HOSTAPD_CONFIG: hostapd configuration is invalid: {detail[:400]}")
+    dnsmasq_test = run([executable("dnsmasq"), "--test", "--conf-file=" + str(dnsmasq_conf)], check=False)
+    if dnsmasq_test.returncode:
+        detail = (dnsmasq_test.stderr or dnsmasq_test.stdout).strip()
+        raise HelperError(f"DNSMASQ_CONFIG: dnsmasq configuration is invalid: {detail[:400]}")
     previous_forward = Path("/proc/sys/net/ipv4/ip_forward").read_text().strip()
     hostapd: subprocess.Popen | None = None
     dnsmasq: subprocess.Popen | None = None
@@ -826,9 +934,6 @@ def ap_start(interface: str, channel_text: str, excluded_text: str) -> None:
             )
             run([executable("nft"), "-f", "-"], input_text=rules)
         hostapd = start_daemon("hostapd", [executable("hostapd"), str(hostapd_conf)], RUN_DIR / "training" / "hostapd.log", 0.8)
-        dnsmasq_test = run([executable("dnsmasq"), "--test", "--conf-file=" + str(dnsmasq_conf)], check=False)
-        if dnsmasq_test.returncode:
-            raise HelperError(f"dnsmasq configuration is invalid: {(dnsmasq_test.stderr or dnsmasq_test.stdout).strip()}")
         dnsmasq = start_daemon(
             "dnsmasq", [executable("dnsmasq"), "--keep-in-foreground", "--conf-file=" + str(dnsmasq_conf)],
             RUN_DIR / "training" / "dnsmasq.log", 0.6,
@@ -971,6 +1076,7 @@ LOG_FILES = {
 
 def sanitize_log_lines(text: str) -> list[str]:
     result: list[str] = []
+    text = text.replace(chr(0x00ef) + chr(0x00bf) + chr(0x00bd), chr(0xfffd))
     for raw in text[-16384:].splitlines()[-80:]:
         line = "".join(char if ord(char) >= 32 and ord(char) != 127 else "�" for char in raw)
         line = re.sub(
@@ -1014,7 +1120,8 @@ def management_start() -> None:
         save_state("management", state)
         reply(**state)
         return
-    interface = detect_management_interface()
+    interface = wait_for_management_interface()
+    verify_ap_capability(interface)
     ssid = safe_text(CFG["management_ssid"], "management SSID", 1, 32)
     password = safe_text(CFG["management_password"], "management WPA2 password", 8, 63)
     channel = CFG["management_channel"]
@@ -1038,6 +1145,7 @@ def management_start() -> None:
     training = load_state("training")
     if training.get("running") and training.get("interface") == interface:
         raise HelperError("The internal management adapter is already used by the Training AP")
+    reserve_management_interface(interface)
     hostapd_conf, dnsmasq_conf = write_ap_configs(
         "management", interface, ssid, password, channel, CFG["management_country"], CFG["management_address"],
         CFG["management_gateway"], CFG["management_dhcp_start"], CFG["management_dhcp_end"],
@@ -1071,6 +1179,7 @@ def management_start() -> None:
         "enabled": True, "running": True, "interface": interface, "ssid": ssid, "channel": channel,
         "gateway": CFG["management_gateway"], "forwarding": False, "hostapd_pid": hostapd.pid,
         "dnsmasq_pid": dnsmasq.pid, "started_at": time.time(), "web_url": f"http://{CFG['management_gateway']}:8000",
+        "network_manager_reserved": True,
     }
     save_state("management", state)
     reply(**public_ap_state(state, "management"))

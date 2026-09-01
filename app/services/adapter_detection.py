@@ -107,7 +107,9 @@ def _assign_roles(adapters: list[Adapter], config: AppConfig) -> None:
         (item for item in adapters if item.interface in config.adapters.management_interfaces and not item.usb_id),
         None,
     )
-    management = internal or named
+    # The configured interface wins so wlan0 remains the permanent management
+    # adapter even when another internal WLAN appears first in sysfs.
+    management = named or internal
     if management:
         management.role = "management"
         management.role_reason = (

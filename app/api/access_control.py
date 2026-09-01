@@ -21,3 +21,8 @@ def require_confirmed_action(request: Request) -> None:
     require_management_client(request)
     if request.headers.get("X-PinePi-Action") != "confirmed":
         raise HTTPException(403, "A confirmed PinePi browser action is required")
+
+
+def require_privileged_action(request: Request) -> None:
+    """Guard every state-changing appliance action from non-management peers."""
+    require_confirmed_action(request)

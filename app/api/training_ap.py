@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Request
 
-from app.api.access_control import require_management_client
+from app.api.access_control import require_management_client, require_privileged_action
 from app.models import APStartRequest
 
 router = APIRouter(prefix="/api/training-ap", tags=["training-ap"])
@@ -8,11 +8,13 @@ router = APIRouter(prefix="/api/training-ap", tags=["training-ap"])
 
 @router.post("/start")
 async def start_ap(body: APStartRequest, request: Request) -> dict:
+    require_privileged_action(request)
     return await request.app.state.training_ap.start(body.ssid, body.password, body.channel)
 
 
 @router.post("/stop")
 async def stop_ap(request: Request) -> dict:
+    require_privileged_action(request)
     return await request.app.state.training_ap.stop()
 
 

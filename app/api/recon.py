@@ -3,6 +3,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Query, Request
 
+from app.api.access_control import require_privileged_action
 from app.models import TrustedProfileRequest
 
 router = APIRouter(prefix="/api/recon", tags=["recon"])
@@ -10,6 +11,7 @@ router = APIRouter(prefix="/api/recon", tags=["recon"])
 
 @router.post("/sessions", status_code=201)
 async def start_session(request: Request) -> dict:
+    require_privileged_action(request)
     return await request.app.state.recon.start()
 
 
@@ -28,11 +30,13 @@ async def session(session_id: UUID, request: Request) -> dict:
 
 @router.post("/sessions/{session_id}/stop")
 async def stop_session(session_id: UUID, request: Request) -> dict:
+    require_privileged_action(request)
     return await request.app.state.recon.stop(str(session_id))
 
 
 @router.delete("/sessions/{session_id}")
 async def delete_session(session_id: UUID, request: Request) -> dict:
+    require_privileged_action(request)
     request.app.state.recon.delete_session(str(session_id))
     return {"deleted": session_id}
 
@@ -89,16 +93,19 @@ async def trusted(request: Request) -> dict:
 
 @router.post("/trusted", status_code=201)
 async def create_trusted(body: TrustedProfileRequest, request: Request) -> dict:
+    require_privileged_action(request)
     return request.app.state.recon.add_trusted(body.ssid, body.approved_bssids, body.expected_security, body.expected_channels, body.expected_vendor)
 
 
 @router.delete("/trusted/{profile_id}")
 async def delete_trusted(profile_id: int, request: Request) -> dict:
+    require_privileged_action(request)
     request.app.state.recon.delete_trusted(profile_id)
     return {"deleted": profile_id}
 
 
 @router.delete("/history")
 async def clear_history(request: Request) -> dict:
+    require_privileged_action(request)
     request.app.state.recon.clear_history()
     return {"cleared": True}

@@ -1,6 +1,7 @@
 [Unit]
 Description=PinePi permanent management Wi-Fi
-After=network-pre.target NetworkManager.service
+After=network-pre.target network-online.target NetworkManager.service
+Wants=network-online.target NetworkManager.service
 Before=pinepi.service
 
 [Service]

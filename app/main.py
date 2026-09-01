@@ -39,6 +39,7 @@ ERROR_CODES = {
     "REGULATORY_RESTRICTION", "INJECTION_UNSUPPORTED", "PROCESS_START_FAILED", "PROCESS_EXITED",
     "CAPTURE_FULL", "NO_TARGET", "INVALID_BSSID", "TOOL_MISSING", "TOOL_VERSION_UNSUPPORTED",
     "PERMISSION_FAILED", "OUTPUT_PARSE_FAILED", "ACTIVE_LIMIT", "TARGET_MISMATCH", "ANALYSIS_LIMIT",
+    "STORAGE_FULL", "STORAGE_UNAVAILABLE", "STATE_WRITE_FAILED",
 }
 
 
@@ -55,6 +56,10 @@ def normalized_error(message: str, default: str) -> tuple[str, str]:
         return "ADAPTER_BUSY", message
     if "required executable not found" in lowered:
         return "TOOL_MISSING", message
+    if "storage_full" in lowered or "no space" in lowered or "insufficient space" in lowered:
+        return "STORAGE_FULL", message
+    if "storage_unavailable" in lowered or "state_write_failed" in lowered:
+        return "STORAGE_UNAVAILABLE", message
     if "permission" in lowered or "sudo" in lowered:
         return "PERMISSION_FAILED", message
     if "monitor" in lowered:
