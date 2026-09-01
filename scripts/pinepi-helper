@@ -258,6 +258,7 @@ def set_managed(interface: str) -> None:
         run([nmcli, "device", "set", interface, "managed", "yes"], check=False)
 
 
+@serialized_lifecycle("scan")
 def scan_start(interface: str) -> None:
     interface = validate_interface(interface)
     clean_runtime_files()
@@ -276,7 +277,11 @@ def scan_start(interface: str) -> None:
     for path in root.glob("current*"):
         if path.is_file() and not path.is_symlink():
             path.unlink()
+    process: subprocess.Popen | None = None
+    reserved = False
     try:
+        reserve_audit_interface(interface)
+        reserved = True
         set_monitor(interface)
         process = start_daemon(
             "airodump-ng",
@@ -284,14 +289,18 @@ def scan_start(interface: str) -> None:
             RUN_DIR / "recon.log",
             0.35,
         )
+        state = {"running": True, "pid": process.pid, "interface": interface, "started_at": time.time()}
+        save_state("scan", state)
     except Exception:
-        set_managed(interface)
+        if process is not None:
+            terminate(process.pid, "airodump-ng")
+        if reserved:
+            set_managed(interface)
         raise
-    state = {"running": True, "pid": process.pid, "interface": interface, "started_at": time.time()}
-    save_state("scan", state)
     reply(**state)
 
 
+@serialized_lifecycle("scan")
 def scan_stop() -> None:
     state = load_state("scan")
     terminate(state.get("pid"), "airodump-ng")
@@ -780,6 +789,20 @@ def reserve_management_interface(interface: str) -> None:
         return
     # Disconnecting drops a saved client connection; managed=no prevents
     # NetworkManager from reconnecting it while hostapd owns the interface.
+    run([nmcli, "device", "disconnect", interface], check=False)
+    run([nmcli, "device", "set", interface, "managed", "no"], check=False)
+
+
+def reserve_audit_interface(interface: str) -> None:
+    """Temporarily keep the selected external audit WLAN out of NetworkManager."""
+    if interface in CFG["management_interfaces"]:
+        raise HelperError("The management WLAN cannot be used for Recon")
+    nmcli = shutil.which("nmcli")
+    if not nmcli:
+        return
+    # A disconnected device can still be auto-reconnected or have its mode
+    # changed by NetworkManager. Reserve only this operation's interface;
+    # Ethernet, wlan0, and every other WLAN remain unaffected.
     run([nmcli, "device", "disconnect", interface], check=False)
     run([nmcli, "device", "set", interface, "managed", "no"], check=False)
 

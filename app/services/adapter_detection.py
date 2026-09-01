@@ -119,7 +119,12 @@ def _assign_roles(adapters: list[Adapter], config: AppConfig) -> None:
 
     def choose(role: str, usb_ids: tuple[str, ...], capability: str) -> None:
         candidates = [item for item in adapters if item.interface not in assigned]
-        preferred = next((item for item in candidates if item.usb_id in usb_ids), None)
+        # A configured USB ID is only a preference. Do not assign an adapter
+        # to a role when it does not advertise the capability that role needs.
+        preferred = next(
+            (item for item in candidates if item.usb_id in usb_ids and getattr(item, capability)),
+            None,
+        )
         capable = next((item for item in candidates if getattr(item, capability)), None)
         selected = preferred or capable
         if selected:

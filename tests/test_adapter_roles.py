@@ -22,6 +22,16 @@ def test_usb_wlan0_is_not_assumed_to_be_internal():
     assert adapters[0].role == "audit"
 
 
+def test_preferred_audit_usb_id_must_support_monitor_mode():
+    adapters = [
+        Adapter("wlan1", usb_id="0bda:8813", supports_monitor=False),
+        Adapter("wlan2", usb_id="1234:5678", supports_monitor=True),
+    ]
+    _assign_roles(adapters, AppConfig())
+    assert adapters[0].role != "audit"
+    assert adapters[1].role == "audit"
+
+
 def test_phy_capabilities_include_regulatory_channel_flags():
     output = """
 Supported interface modes:

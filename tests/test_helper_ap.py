@@ -16,6 +16,49 @@ def test_default_uplink_excludes_ap_and_audit_interfaces():
     assert HELPER["select_default_uplink"](routes, {"wlan0", "eth0"}) == ""
 
 
+def test_audit_reservation_disconnects_only_selected_external_interface(monkeypatch):
+    calls = []
+    globals_ = HELPER["reserve_audit_interface"].__globals__
+    monkeypatch.setitem(globals_, "shutil", SimpleNamespace(which=lambda name: "/usr/bin/nmcli"))
+    monkeypatch.setitem(globals_, "run", lambda argv, **kwargs: calls.append((argv, kwargs)))
+
+    HELPER["reserve_audit_interface"]("wlan2")
+
+    assert calls == [
+        (("/usr/bin/nmcli", "device", "disconnect", "wlan2"), {"check": False}),
+        (("/usr/bin/nmcli", "device", "set", "wlan2", "managed", "no"), {"check": False}),
+    ]
+
+
+def test_audit_reservation_rejects_management_interface(monkeypatch):
+    with pytest.raises(HELPER["HelperError"], match="management WLAN"):
+        HELPER["reserve_audit_interface"]("wlan0")
+
+
+def test_scan_start_rolls_back_after_state_write_failure(monkeypatch, tmp_path):
+    globals_ = HELPER["scan_start"].__globals__
+    calls = []
+    monkeypatch.setitem(globals_, "RUN_DIR", tmp_path / "run")
+    monkeypatch.setitem(globals_, "validate_interface", lambda value: value)
+    monkeypatch.setitem(globals_, "clean_runtime_files", lambda: None)
+    monkeypatch.setitem(globals_, "ensure_free_space", lambda *args: None)
+    monkeypatch.setitem(globals_, "ensure_idle", lambda *args: None)
+    monkeypatch.setitem(globals_, "load_state", lambda name: {})
+    monkeypatch.setitem(globals_, "validate_storage", lambda path: tmp_path / "scans")
+    monkeypatch.setitem(globals_, "reserve_audit_interface", lambda interface: calls.append(("reserve", interface)))
+    monkeypatch.setitem(globals_, "set_monitor", lambda interface: calls.append(("monitor", interface)))
+    monkeypatch.setitem(globals_, "start_daemon", lambda *args: SimpleNamespace(pid=123))
+    monkeypatch.setitem(globals_, "save_state", lambda *args: (_ for _ in ()).throw(HELPER["HelperError"]("state full")))
+    monkeypatch.setitem(globals_, "terminate", lambda *args: calls.append(("terminate", *args)))
+    monkeypatch.setitem(globals_, "set_managed", lambda interface: calls.append(("managed", interface)))
+
+    with pytest.raises(HELPER["HelperError"], match="state full"):
+        HELPER["scan_start"]("wlan2")
+
+    assert ("terminate", 123, "airodump-ng") in calls
+    assert ("managed", "wlan2") in calls
+
+
 def test_ap_configs_are_bound_and_isolated(tmp_path):
     globals_ = HELPER["write_ap_configs"].__globals__
     original = globals_["RUN_DIR"]
