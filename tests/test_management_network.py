@@ -47,8 +47,9 @@ def test_management_start_retries_interface_and_does_not_select_external_adapter
     assert HELPER["wait_for_management_interface"]() == "wlan0"
 
 
-def test_management_state_is_idempotent_when_both_daemons_are_alive(monkeypatch, capsys):
+def test_management_state_is_idempotent_when_both_daemons_are_alive(monkeypatch, capsys, tmp_path):
     globals_ = HELPER["management_start"].__globals__
+    monkeypatch.setitem(globals_, "RUN_DIR", tmp_path)
     monkeypatch.setitem(globals_, "wait_for_management_interface", lambda: "wlan0")
     monkeypatch.setitem(globals_, "verify_ap_capability", lambda interface: None)
     monkeypatch.setitem(globals_, "load_state", lambda name: {"running": True, "hostapd_pid": 1, "dnsmasq_pid": 2, "interface": "wlan0"})
@@ -57,3 +58,24 @@ def test_management_state_is_idempotent_when_both_daemons_are_alive(monkeypatch,
     monkeypatch.setitem(globals_, "reply", lambda **data: print(json.dumps(data)))
     HELPER["management_start"]()
     assert json.loads(capsys.readouterr().out)["running"] is True
+
+
+def test_management_status_is_read_only_even_when_daemon_is_stale(monkeypatch, capsys):
+    globals_ = HELPER["management_status"].__globals__
+    original = {"running": True, "hostapd_pid": 11, "dnsmasq_pid": 12, "interface": "wlan0"}
+    calls = []
+    monkeypatch.setitem(globals_, "load_state", lambda name: original.copy())
+    monkeypatch.setitem(globals_, "process_alive", lambda pid, expected: pid == 11)
+    monkeypatch.setitem(globals_, "clients", lambda interface: [])
+    monkeypatch.setitem(globals_, "terminate", lambda *args: calls.append("terminate"))
+    monkeypatch.setitem(globals_, "cleanup_ap_runtime", lambda *args: calls.append("cleanup"))
+    monkeypatch.setitem(globals_, "set_managed", lambda *args: calls.append("managed"))
+    monkeypatch.setitem(globals_, "save_state", lambda *args: calls.append("save"))
+
+    HELPER["management_status"]()
+    result = json.loads(capsys.readouterr().out)
+    assert result["running"] is False
+    assert result["healthy"] is False
+    assert result["stored_running"] is True
+    assert calls == []
+    assert original["running"] is True

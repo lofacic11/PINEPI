@@ -202,7 +202,7 @@ def test_training_stop_is_idempotent(monkeypatch, capsys):
     assert len(capsys.readouterr().out.splitlines()) == 2
 
 
-def test_unexpected_scanner_exit_restores_audit_adapter(monkeypatch, capsys):
+def test_scan_status_reports_unexpected_exit_without_restoring_or_mutating(monkeypatch, capsys):
     globals_ = HELPER["scan_status"].__globals__
     state = {"running": True, "pid": 42, "interface": "wlan9", "started_at": 1}
     managed, saved = [], []
@@ -211,10 +211,12 @@ def test_unexpected_scanner_exit_restores_audit_adapter(monkeypatch, capsys):
     monkeypatch.setitem(globals_, "set_managed", lambda interface: managed.append(interface))
     monkeypatch.setitem(globals_, "save_state", lambda name, value: saved.append(value.copy()))
     HELPER["scan_status"]()
-    assert managed == ["wlan9"]
-    assert saved[-1]["running"] is False
-    assert "stopped_at" in saved[-1]
-    capsys.readouterr()
+    result = json.loads(capsys.readouterr().out)
+    assert managed == []
+    assert saved == []
+    assert result["running"] is False
+    assert result["stored_running"] is True
+    assert result["healthy"] is False
 
 
 def test_helper_validates_utf8_byte_lengths():

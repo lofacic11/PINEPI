@@ -129,7 +129,7 @@ def test_helper_rejects_arbitrary_bssid_arguments(monkeypatch, value):
         helper["active_start"]("deauth", "wlan9", "6", value, "-", "8", "15")
 
 
-def test_unexpected_active_process_exit_restores_adapter(monkeypatch, capsys):
+def test_active_status_reports_unexpected_exit_without_mutation(monkeypatch, capsys):
     import runpy
 
     helper = runpy.run_path("scripts/pinepi-helper")
@@ -145,10 +145,12 @@ def test_unexpected_active_process_exit_restores_adapter(monkeypatch, capsys):
     monkeypatch.setitem(globals_, "save_state", lambda name, value: saved.append(value.copy()))
     monkeypatch.setitem(globals_, "recent_log", lambda path: "bounded failure reason")
     helper["active_status"]()
-    assert managed == ["wlan9"]
-    assert saved[-1]["running"] is False
-    assert saved[-1]["interface_restored"] is True
-    capsys.readouterr()
+    result = json.loads(capsys.readouterr().out)
+    assert managed == []
+    assert saved == []
+    assert result["running"] is False
+    assert result["stored_running"] is True
+    assert result["healthy"] is False
 
 
 def test_monitor_lifecycle_uses_native_iw_state_and_is_idempotent(monkeypatch, capsys):

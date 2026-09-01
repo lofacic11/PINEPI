@@ -8,7 +8,9 @@ boundary.
 from __future__ import annotations
 
 import argparse
+import functools
 import errno
+import fcntl
 import ipaddress
 import json
 import os
@@ -22,6 +24,7 @@ import threading
 import time
 import tomllib
 from pathlib import Path
+from contextlib import contextmanager
 
 RUN_DIR = Path("/run/pinepi")
 MAX_LOG_BYTES = 1024 * 1024
@@ -168,6 +171,28 @@ def clean_runtime_files() -> None:
                 path.unlink()
 
 
+@contextmanager
+def lifecycle_lock(kind: str):
+    RUN_DIR.mkdir(parents=True, exist_ok=True, mode=0o755)
+    lock_path = RUN_DIR / f"{kind}.lifecycle.lock"
+    with lock_path.open("a+") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def serialized_lifecycle(kind: str):
+    def decorator(function):
+        @functools.wraps(function)
+        def wrapped(*args, **kwargs):
+            with lifecycle_lock(kind):
+                return function(*args, **kwargs)
+        return wrapped
+    return decorator
+
+
 def process_alive(pid: object, expected: str) -> bool:
     try:
         number = int(pid)
@@ -275,14 +300,11 @@ def scan_stop() -> None:
 def scan_status() -> None:
     state = load_state("scan")
     running = process_alive(state.get("pid"), "airodump-ng")
-    state["running"] = running
-    if state and not running and "stopped_at" not in state:
-        state["stopped_at"] = time.time()
-        interface = str(state.get("interface", ""))
-        if IFACE_RE.fullmatch(interface):
-            set_managed(interface)
-        save_state("scan", state)
-    reply(**state)
+    result = dict(state)
+    result["stored_running"] = bool(state.get("running"))
+    result["running"] = running
+    result["healthy"] = running == bool(state.get("running"))
+    reply(**result)
 
 
 def capture_start(interface: str, channel_text: str, max_mb_text: str) -> None:
@@ -332,29 +354,20 @@ def capture_start(interface: str, channel_text: str, max_mb_text: str) -> None:
 def capture_details(state: dict) -> dict:
     if not state:
         return {"running": False, "elapsed_seconds": 0, "packet_count": 0, "eapol_frames": 0, "size": 0, "filename": ""}
+    result = dict(state)
     running = process_alive(state.get("pid"), "dumpcap")
     path = Path(str(state.get("path", "")))
     size = path.stat().st_size if path.is_file() else 0
-    if not running and state.get("running"):
-        state["running"] = False
-        state["stopped_at"] = time.time()
-        if size >= int(state.get("max_bytes", 0)) * 0.99:
-            state["stop_reason"] = "size limit reached"
-        else:
-            state["stop_reason"] = state.get("stop_reason") or "capture process exited"
-        interface = str(state.get("interface", ""))
-        if IFACE_RE.fullmatch(interface):
-            set_managed(interface)
-            state["interface_restored"] = True
-        save_state("capture", state)
-    state["running"] = running
+    result["stored_running"] = bool(state.get("running"))
+    result["healthy"] = running == bool(state.get("running"))
+    result["running"] = running
     end = time.time() if running else float(state.get("stopped_at", state.get("started_at", time.time())))
-    state["elapsed_seconds"] = max(0, int(end - float(state.get("started_at", end))))
-    state["size"] = size
-    state["packet_count"] = packet_count(path)
-    state["eapol_frames"] = eapol_count(path)
-    state.pop("path", None)
-    return state
+    result["elapsed_seconds"] = max(0, int(end - float(state.get("started_at", end))))
+    result["size"] = size
+    result["packet_count"] = packet_count(path)
+    result["eapol_frames"] = eapol_count(path)
+    result.pop("path", None)
+    return result
 
 
 def packet_count(path: Path) -> int:
@@ -568,23 +581,14 @@ def active_details(state: dict) -> dict:
         return {"running": False, "type": "", "elapsed_seconds": 0}
     expected = str(state.get("executable", "aireplay-ng"))
     running = process_alive(state.get("pid"), expected)
-    if running and time.time() >= float(state.get("deadline", 0)):
-        terminate(state.get("pid"), expected)
-        running = False
-        state["stop_reason"] = "runtime limit reached"
-    if state.get("running") and not running:
-        interface = str(state.get("interface", ""))
-        if IFACE_RE.fullmatch(interface) and not state.get("interface_restored"):
-            set_managed(interface)
-            state["interface_restored"] = True
-        state.update(running=False, stopped_at=time.time())
-        state["stop_reason"] = state.get("stop_reason") or "active-test process exited"
-        save_state("active", state)
-    state["running"] = running
+    result = dict(state)
+    result["stored_running"] = bool(state.get("running"))
+    result["running"] = running
+    result["healthy"] = running == bool(state.get("running")) and time.time() < float(state.get("deadline", float("inf")))
     end = time.time() if running else float(state.get("stopped_at", time.time()))
-    state["elapsed_seconds"] = max(0, int(end - float(state.get("started_at", end))))
-    state["recent_output"] = recent_log(RUN_DIR / "active.log")
-    return state
+    result["elapsed_seconds"] = max(0, int(end - float(state.get("started_at", end))))
+    result["recent_output"] = recent_log(RUN_DIR / "active.log")
+    return result
 
 
 def active_status() -> None:
@@ -869,6 +873,7 @@ def parse_exclusions(value: str) -> set[str]:
     return result
 
 
+@serialized_lifecycle("training")
 def ap_start(interface: str, channel_text: str, excluded_text: str) -> None:
     interface = validate_interface(interface)
     try:
@@ -986,6 +991,7 @@ def cleanup_ap_runtime(state: dict, kind: str) -> None:
     remove_runtime_configs(kind)
 
 
+@serialized_lifecycle("training")
 def ap_stop() -> None:
     state = load_state("training")
     cleanup_ap_runtime(state, "training")
@@ -1020,18 +1026,13 @@ def clients(interface: str) -> list[dict]:
 
 def public_ap_state(state: dict, kind: str) -> dict:
     running = process_alive(state.get("hostapd_pid"), "hostapd") and process_alive(state.get("dnsmasq_pid"), "dnsmasq")
-    if state.get("running") and not running:
-        cleanup_ap_runtime(state, kind)
-        state.update(running=False, forwarding=False, stopped_at=time.time())
-        log_error = recent_log(RUN_DIR / kind / "dnsmasq.log") or recent_log(RUN_DIR / kind / "hostapd.log")
-        if log_error:
-            state["last_error"] = log_error
-        save_state(kind, state)
     private_keys = {
         "previous_forward", "hostapd_pid", "dnsmasq_pid", "password", "passphrase", "wpa_passphrase",
     }
     result = {key: value for key, value in state.items() if key not in private_keys}
+    result["stored_running"] = bool(state.get("running"))
     result["running"] = running
+    result["healthy"] = running == bool(state.get("running"))
     result["forwarding"] = bool(running and state.get("forwarding"))
     result["clients"] = clients(str(state.get("interface", ""))) if running else []
     result["client_count"] = len(result["clients"])
@@ -1114,6 +1115,7 @@ def logs(source: str) -> None:
     reply(source=source, lines=sanitize_log_lines(text), truncated=len(text) > 16384)
 
 
+@serialized_lifecycle("management")
 def management_start() -> None:
     if not CFG["management_enabled"]:
         state = {"enabled": False, "running": False, "forwarding": False, "gateway": CFG["management_gateway"]}
@@ -1185,6 +1187,7 @@ def management_start() -> None:
     reply(**public_ap_state(state, "management"))
 
 
+@serialized_lifecycle("management")
 def management_stop() -> None:
     state = load_state("management")
     cleanup_ap_runtime(state, "management")
