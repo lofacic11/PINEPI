@@ -31,7 +31,7 @@ max_result_rows = 1000
 [management_ap]
 enabled = true
 ssid = "PinePi"
-password = "CHANGE-ME-BEFORE-USE"
+# Management Wi-Fi is intentionally open. Do not store a password here.
 interface_role = "management"
 address = "10.43.0.1/24"
 dhcp_start = "10.43.0.20"

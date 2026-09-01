@@ -686,7 +686,7 @@ def write_ap_configs(
     kind: str,
     interface: str,
     ssid: str,
-    password: str,
+    password: str | None,
     channel: int,
     country: str,
     address: str,
@@ -700,10 +700,14 @@ def write_ap_configs(
     hostapd_conf = directory / "hostapd.conf"
     dnsmasq_conf = directory / "dnsmasq.conf"
     network = ipaddress.ip_interface(address).network
+    security = (
+        f"wpa=2\nwpa_passphrase={password}\nwpa_key_mgmt=WPA-PSK\nrsn_pairwise=CCMP\n"
+        if password is not None else ""
+    )
     hostapd_conf.write_text(
         f"interface={interface}\ndriver=nl80211\nssid={ssid}\nhw_mode=g\nchannel={channel}\n"
         f"country_code={country}\nieee80211d=1\nwmm_enabled=1\nauth_algs=1\n"
-        f"wpa=2\nwpa_passphrase={password}\nwpa_key_mgmt=WPA-PSK\nrsn_pairwise=CCMP\n"
+        f"{security}"
     )
     dnsmasq_conf.write_text(
         f"interface={interface}\nbind-interfaces\nlisten-address={gateway}\n"
@@ -1131,7 +1135,6 @@ def management_start() -> None:
     interface = wait_for_management_interface()
     verify_ap_capability(interface)
     ssid = safe_text(CFG["management_ssid"], "management SSID", 1, 32)
-    password = safe_text(CFG["management_password"], "management WPA2 password", 8, 63)
     channel = CFG["management_channel"]
     if not 1 <= channel <= 13:
         raise HelperError("Management AP channel must be between 1 and 13")
@@ -1155,7 +1158,7 @@ def management_start() -> None:
         raise HelperError("The internal management adapter is already used by the Training AP")
     reserve_management_interface(interface)
     hostapd_conf, dnsmasq_conf = write_ap_configs(
-        "management", interface, ssid, password, channel, CFG["management_country"], CFG["management_address"],
+        "management", interface, ssid, None, channel, CFG["management_country"], CFG["management_address"],
         CFG["management_gateway"], CFG["management_dhcp_start"], CFG["management_dhcp_end"],
     )
     hostapd: subprocess.Popen | None = None
