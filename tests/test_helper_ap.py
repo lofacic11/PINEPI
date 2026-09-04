@@ -83,6 +83,46 @@ def test_ap_configs_are_bound_and_isolated(tmp_path):
         globals_["RUN_DIR"] = original
 
 
+def test_management_ap_configuration_is_open(tmp_path):
+    globals_ = HELPER["write_ap_configs"].__globals__
+    original = globals_["RUN_DIR"]
+    globals_["RUN_DIR"] = tmp_path
+    try:
+        hostapd, _ = HELPER["write_ap_configs"](
+            "management", "wlan0", "PinePi", None, 1, "AT", "10.43.0.1/24",
+            "10.43.0.1", "10.43.0.20", "10.43.0.100",
+        )
+        text = hostapd.read_text()
+        assert "ssid=PinePi\n" in text
+        assert "wpa=" not in text
+        assert "wpa_passphrase=" not in text
+    finally:
+        globals_["RUN_DIR"] = original
+
+
+def test_verify_ap_enabled_requires_mode_and_ssid(monkeypatch):
+    globals_ = HELPER["verify_ap_enabled"].__globals__
+    monkeypatch.setitem(globals_, "executable", lambda name: name)
+    monkeypatch.setitem(
+        globals_, "run",
+        lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout="Interface wlan0\n\tssid PinePi\n\ttype AP\n", stderr=""),
+    )
+    HELPER["verify_ap_enabled"]("wlan0", "PinePi")
+
+    monkeypatch.setitem(
+        globals_, "run",
+        lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout="Interface wlan0\n\tssid PinePi\n\ttype managed\n", stderr=""),
+    )
+    with pytest.raises(HELPER["HelperError"], match="did not enter AP mode"):
+        HELPER["verify_ap_enabled"]("wlan0", "PinePi")
+
+
+def test_uninstall_stops_all_transient_wireless_operations():
+    uninstall = __import__("pathlib").Path("scripts/uninstall.sh").read_text()
+    for action in ("scan-stop", "capture-stop", "active-stop", "monitor-disable"):
+        assert f"pinepi-helper {action}" in uninstall
+
+
 def test_daemon_start_propagates_real_stderr(tmp_path):
     with pytest.raises(HELPER["HelperError"], match="failed to bind DNS port: Address already in use"):
         HELPER["start_daemon"](
@@ -205,6 +245,7 @@ def test_training_start_stops_hostapd_when_dnsmasq_fails(monkeypatch, tmp_path):
     monkeypatch.setitem(globals_, "default_uplink", lambda excluded: "eth0")
     monkeypatch.setitem(globals_, "write_ap_configs", lambda *args: (tmp_path / "hostapd.conf", tmp_path / "dnsmasq.conf"))
     monkeypatch.setitem(globals_, "configure_ap_interface", lambda *args: calls.append("configured"))
+    monkeypatch.setitem(globals_, "verify_ap_enabled", lambda *args: None)
     monkeypatch.setitem(globals_, "nft_cleanup", lambda: calls.append("nft-cleanup"))
     monkeypatch.setitem(globals_, "executable", lambda name: name)
     monkeypatch.setitem(globals_, "run", lambda argv, **kwargs: calls.append(argv) or SimpleNamespace(returncode=0, stdout="", stderr=""))

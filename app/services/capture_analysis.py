@@ -248,33 +248,45 @@ class CaptureAnalysisService:
             return {"available": False, "status": "TOOL_MISSING", "items": [], "limit": limit, "offset": offset}
         items = []
         parsed = 0
-        with PcapReader(str(path)) as packets:
-            for index, packet in enumerate(packets):
-                if index >= self.config.analysis.max_packets or len(items) >= limit:
-                    break
-                if index < offset or not packet.haslayer(Dot11):
-                    continue
-                dot11 = packet[Dot11]
-                item = {
-                    "number": index + 1,
-                    "type": int(dot11.type),
-                    "subtype": int(dot11.subtype),
-                    "destination": str(dot11.addr1 or ""),
-                    "source": str(dot11.addr2 or ""),
-                    "bssid": str(dot11.addr3 or ""),
-                    "sequence": int(getattr(dot11, "SC", 0)) >> 4,
-                    "information_elements": [],
-                }
-                layer = packet.getlayer(Dot11Elt)
-                element_count = 0
-                while layer is not None and element_count < 32:
-                    raw_info = bytes(getattr(layer, "info", b""))[:256]
-                    text = raw_info.decode("utf-8", errors="replace") if int(getattr(layer, "ID", -1)) == 0 else raw_info.hex()
-                    item["information_elements"].append({"id": int(getattr(layer, "ID", -1)), "value": text})
-                    layer = layer.payload.getlayer(Dot11Elt)
-                    element_count += 1
-                items.append(item)
-                parsed += 1
+        try:
+            with PcapReader(str(path)) as packets:
+                for index, packet in enumerate(packets):
+                    if index >= self.config.analysis.max_packets or len(items) >= limit:
+                        break
+                    if index < offset or not packet.haslayer(Dot11):
+                        continue
+                    dot11 = packet[Dot11]
+                    item = {
+                        "number": index + 1,
+                        "type": int(dot11.type),
+                        "subtype": int(dot11.subtype),
+                        "destination": str(dot11.addr1 or ""),
+                        "source": str(dot11.addr2 or ""),
+                        "bssid": str(dot11.addr3 or ""),
+                        "sequence": int(getattr(dot11, "SC", 0)) >> 4,
+                        "information_elements": [],
+                    }
+                    layer = packet.getlayer(Dot11Elt)
+                    element_count = 0
+                    while layer is not None and element_count < 32:
+                        raw_info = bytes(getattr(layer, "info", b""))[:256]
+                        text = raw_info.decode("utf-8", errors="replace") if int(getattr(layer, "ID", -1)) == 0 else raw_info.hex()
+                        item["information_elements"].append({"id": int(getattr(layer, "ID", -1)), "value": text})
+                        layer = layer.payload.getlayer(Dot11Elt)
+                        element_count += 1
+                    items.append(item)
+                    parsed += 1
+        except Exception:
+            return {
+                "available": True,
+                "status": "OUTPUT_PARSE_FAILED",
+                "items": [],
+                "limit": limit,
+                "offset": offset,
+                "parsed": 0,
+                "payloads_included": False,
+                "note": "The capture could not be parsed as a readable PCAPNG file.",
+            }
         return {
             "available": True,
             "status": "OK",
@@ -287,7 +299,18 @@ class CaptureAnalysisService:
         }
 
     def _store(self, filename: str, engine: str, result: dict) -> None:
-        bounded = json.dumps(result, separators=(",", ":"))[:100000]
+        serialized = json.dumps(result, separators=(",", ":"))
+        bounded = serialized[:100000]
+        if len(bounded) != len(serialized):
+            bounded = json.dumps(
+                {
+                    "filename": filename,
+                    "engine": engine,
+                    "status": "RESULT_TRUNCATED",
+                    "note": "The full analysis result exceeded the database preview limit.",
+                },
+                separators=(",", ":"),
+            )
         self.database.execute(
             "INSERT INTO analysis_results(id,filename,engine,created_at,status,result_json) VALUES(?,?,?,?,?,?)",
             (str(uuid.uuid4()), filename, engine, datetime.now(UTC).isoformat(), str(result.get("status", "OK")), bounded),

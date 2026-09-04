@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from contextlib import suppress
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 
@@ -33,36 +34,47 @@ class ReconService:
             raise RuntimeError("TOOL_VERSION_UNSUPPORTED: Kismet API ingestion is not configured; select auto or airodump")
         adapters = await detect_adapters(self.config)
         interface = "mock-audit0" if self.config.recon.mock_mode else interface_for_role(adapters, "audit")
-        operation_id = await self.operations.acquire("recon", "audit_adapter")
-        session_id = str(uuid.uuid4())
-        now = datetime.now(UTC).isoformat()
-        self.db.execute(
-            "INSERT INTO scan_sessions(id,started_at,status,audit_interface,monitor_interface,bands,operation_id,mock) VALUES(?,?,?,?,?,?,?,?)",
-            (session_id, now, "preparing", interface, interface, "Both", operation_id, int(self.config.recon.mock_mode)),
-        )
-        try:
-            if self.config.recon.mock_mode:
-                scenario = self.config.recon.mock_scenario
-                if scenario == "missing_adapter":
-                    raise RuntimeError("Required audit adapter is missing (simulated)")
-                if scenario == "failure":
-                    raise RuntimeError("Scanner failed to enter monitor mode (simulated)")
-                self._ingest(session_id, [] if scenario == "empty" else MOCK_APS, [] if scenario == "empty" else MOCK_CLIENTS)
-                if scenario == "normal" and not self.db.one("SELECT id FROM trusted_profiles WHERE ssid='PinePi Lab'"):
-                    self.add_trusted("PinePi Lab", ["00:11:22:33:44:55"], "WPA3", [1], "Example Networks")
-                result = {"running": True, "pid": None, "interface": interface}
-            else:
-                result = await self.helper.call("scan-start", interface)
-            self.db.execute(
-                "UPDATE scan_sessions SET status='running',runtime_pid=? WHERE id=?",
-                (result.get("pid"), session_id),
-            )
-            self.operations.attach_pid(operation_id, result.get("pid"))
-            return self.session(session_id) or {}
-        except Exception as exc:
-            self.db.execute("UPDATE scan_sessions SET status='failed',stopped_at=?,error=? WHERE id=?", (datetime.now(UTC).isoformat(), str(exc)[:1000], session_id))
-            self.operations.finish(operation_id, "failed", str(exc))
-            raise
+        async def operation() -> dict:
+            operation_id = await self.operations.acquire("recon", "audit_adapter")
+            session_id = str(uuid.uuid4())
+            inserted = False
+            helper_started = False
+            try:
+                now = datetime.now(UTC).isoformat()
+                self.db.execute(
+                    "INSERT INTO scan_sessions(id,started_at,status,audit_interface,monitor_interface,bands,operation_id,mock) VALUES(?,?,?,?,?,?,?,?)",
+                    (session_id, now, "preparing", interface, interface, "Both", operation_id, int(self.config.recon.mock_mode)),
+                )
+                inserted = True
+                if self.config.recon.mock_mode:
+                    scenario = self.config.recon.mock_scenario
+                    if scenario == "missing_adapter":
+                        raise RuntimeError("Required audit adapter is missing (simulated)")
+                    if scenario == "failure":
+                        raise RuntimeError("Scanner failed to enter monitor mode (simulated)")
+                    self._ingest(session_id, [] if scenario == "empty" else MOCK_APS, [] if scenario == "empty" else MOCK_CLIENTS)
+                    if scenario == "normal" and not self.db.one("SELECT id FROM trusted_profiles WHERE ssid='PinePi Lab'"):
+                        self.add_trusted("PinePi Lab", ["00:11:22:33:44:55"], "WPA3", [1], "Example Networks")
+                    result = {"running": True, "pid": None, "interface": interface}
+                else:
+                    result = await self.helper.call("scan-start", interface)
+                    helper_started = True
+                self.db.execute(
+                    "UPDATE scan_sessions SET status='running',runtime_pid=? WHERE id=?",
+                    (result.get("pid"), session_id),
+                )
+                self.operations.attach_pid(operation_id, result.get("pid"))
+                return self.session(session_id) or {}
+            except Exception as exc:
+                if helper_started:
+                    with suppress(Exception):
+                        await self.helper.call("scan-stop")
+                if inserted:
+                    with suppress(Exception):
+                        self.db.execute("UPDATE scan_sessions SET status='failed',stopped_at=?,error=? WHERE id=?", (datetime.now(UTC).isoformat(), str(exc)[:1000], session_id))
+                self.operations.finish(operation_id, "failed", str(exc))
+                raise
+        return await self.operations.run("recon-start", operation)
 
     async def stop(self, session_id: str) -> dict:
         session = self.session(session_id)
@@ -90,6 +102,7 @@ class ReconService:
         session = self.current_session()
         if not session:
             return {"running": False, "session": None, "networks": [], "clients": [], "mock": self.config.recon.mock_mode}
+        helper_status: dict = {}
         if session["status"] in {"preparing", "running", "stopping"}:
             if session["mock"] and self.config.recon.mock_scenario == "normal":
                 self._mock_tick += 1
@@ -100,14 +113,18 @@ class ReconService:
                 helper_status = await self.helper.call("scan-status")
                 if helper_status.get("running"):
                     self.ingest_current(session["id"])
-                elif session["status"] == "running":
-                    self.db.execute("UPDATE scan_sessions SET status='interrupted',stopped_at=?,error='Scanner process exited' WHERE id=?", (datetime.now(UTC).isoformat(), session["id"]))
-                    if session.get("operation_id"):
-                        self.operations.finish(session["operation_id"], "interrupted", "Scanner process exited")
             session = self.session(session["id"])
         aps = self.access_points(session_id=session["id"], limit=100, offset=0)["items"]
         clients = self.clients(session["id"], 100, 0)["items"]
-        return {"running": session["status"] == "running", "session": session, "networks": aps, "clients": clients, "mock": bool(session["mock"])}
+        process_running = helper_status.get("running") if helper_status else None
+        return {
+            "running": session["status"] == "running" and (process_running is not False),
+            "healthy": helper_status.get("healthy", True) if helper_status else True,
+            "session": session,
+            "networks": aps,
+            "clients": clients,
+            "mock": bool(session["mock"]),
+        }
 
     async def reconcile(self) -> None:
         active = self.db.query("SELECT * FROM scan_sessions WHERE status IN ('preparing','running','stopping') ORDER BY started_at DESC")
@@ -124,6 +141,9 @@ class ReconService:
             if genuine and session.get("operation_id"):
                 self.operations.restore(session["operation_id"], "audit_adapter")
             if not genuine:
+                if index == 0 and not self.config.recon.mock_mode and helper_status.get("stored_running"):
+                    with suppress(Exception):
+                        await self.helper.call("scan-stop")
                 self.db.execute("UPDATE scan_sessions SET status='interrupted',stopped_at=?,error='Application restarted while operation state was active' WHERE id=?", (datetime.now(UTC).isoformat(), session["id"]))
 
     def ingest_current(self, session_id: str) -> None:

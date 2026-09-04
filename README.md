@@ -35,7 +35,7 @@ PinePi UI http://10.43.0.1:8000
 RTL8814AU (0bda:8813) -> monitor mode, scan, and passive capture
 ```
 
-The internal non-USB WLAN is reserved for permanent management access. It starts at boot and does not provide Internet forwarding. The RT5572 remains the Training AP, while the RTL8814AU remains the audit adapter. Training NAT excludes all three Wi-Fi role interfaces and uses an eligible default uplink such as `eth0`; without one, the Training AP still provides DHCP and local PinePi access with forwarding shown as disabled.
+The internal non-USB WLAN is reserved for permanent, open management access. It starts at boot, is explicitly marked unmanaged by NetworkManager while active, and does not provide Internet forwarding. The RT5572 remains the Training AP, while the RTL8814AU remains the audit adapter. Training NAT excludes all three Wi-Fi role interfaces and uses an eligible default uplink such as `eth0`; without one, the Training AP still provides DHCP and local PinePi access with forwarding shown as disabled.
 
 ## Adapter roles
 
@@ -56,7 +56,7 @@ Edit `/etc/pinepi/pinepi.toml` to add another USB ID. A stable per-device MAC ru
 - Responsive, keyboard-accessible application shell for phones, tablets, and desktops. Its collapsible desktop sidebar becomes a full mobile drawer and organizes Dashboard, Campaigns/Audits, Access Point, Recon, Logging, Modules, Captures, Wireless Tools, Security Analysis, Packet Capture, Diagnostics/Console, Reports, and Settings.
 - Guided Mode (default) uses plain-language signal and security explanations; locally persisted Expert Mode reveals BSSID, frequency, timestamps, raw advertised flags, packet counts, interfaces, and diagnostics—but never a command shell.
 - Real Dashboard state for version, hostname, CPU, temperature, storage, uptime, time, adapter roles, management network, active/recent operations, and Recon summary.
-- Boot-managed WPA2 management network with status, client count, and a stable local UI address.
+- Boot-managed open management Wi-Fi network with status, client count, and a stable local UI address.
 - Explicit passive Recon sessions with durable SQLite AP/client observations, search, server-side filters/sorting, bounded pagination, details, reopen/delete, and configurable retention.
 - PinePi-branded Recon workspace with Scanning/Handshakes tabs, real wireless-object and channel-distribution summaries, previous-session metadata, AP/client tables, and responsive details drawers. Channel distribution is observed AP count, never spectrum utilization or airtime.
 - AP/client relationship details, bounded signal samples, MAC-randomization warnings, offline vendor lookup, and conservative trusted-profile indicators.
@@ -104,7 +104,7 @@ An active request is accepted only when all of the following hold:
 6. the backend operation manager grants exclusive ownership of the audit adapter;
 7. the helper independently validates interface, channel, BSSID, optional client, burst count, runtime, and operation type.
 
-There is no “all nearby networks” mode. The helper wraps long-running active engines with a hard timeout, verifies the expected executable through `/proc`, captures bounded logs, provides Stop with TERM/KILL fallback, and restores managed mode after stop, failure, timeout, or observed process exit. PinePi reports `airmon-ng check` output but never automatically kills unrelated processes.
+There is no “all nearby networks” mode. The helper wraps long-running active engines with a hard timeout, verifies the expected executable through `/proc`, captures bounded logs, provides Stop with TERM/KILL fallback, and restores managed mode after stop, failure, timeout, or startup reconciliation. If a process exits unexpectedly, the UI keeps the cleanup action available so the operator can restore the adapter explicitly. PinePi reports `airmon-ng check` output but never automatically kills unrelated processes.
 
 ## Training AP networking
 
@@ -134,7 +134,7 @@ Review `config/pinepi.example.toml` before deployment, especially the country co
 
 The one deliberate exception is `GET /api/training-ap/credentials`: while a PinePi-owned Training/Lab AP is running, it returns only that AP's active SSID, channel, and PSK so the Access Point page can keep the Lab password visible and copyable. The route accepts the direct TCP peer only from the configured Management subnet (or loopback for local development), does not trust `X-Forwarded-For`, and reads the root-owned active hostapd configuration through the restricted helper. It never returns a Management Wi-Fi password, system password, scanned-network password, or captured credential. PinePi does not know or recover an observed network's original WPA password; a same-SSID Lab AP always uses a new PinePi-controlled PSK.
 
-Change the example `[management_ap]` password before exposing the appliance. Management defaults to `10.43.0.1/24`, deliberately separate from Training AP subnet `10.42.0.0/24`.
+Management Wi-Fi is intentionally open, so no management password is configured or returned. Management defaults to `10.43.0.1/24`, deliberately separate from Training AP subnet `10.42.0.0/24`.
 
 ### First boot and updates
 
@@ -177,7 +177,7 @@ The dashboard and `/health` work without root. Hardware actions intentionally fa
 
 Monitor mode receives raw 802.11 frames and disconnects that interface from ordinary managed Wi-Fi. PinePi therefore reserves a dedicated adapter for scan/capture and leaves the management uplink separate. Scan and capture are mutually exclusive because both own the audit adapter. Starting a capture locks it to the selected target channel. Clean FastAPI shutdown stops transient scan/capture operations so capture files remain valid; the Training AP is left under explicit Start/Stop control.
 
-The helper also restores the audit adapter to managed mode if scanner/capture startup fails or a tracked process exits unexpectedly. Training AP startup is transactional: hostapd, dnsmasq, PinePi's dedicated `table ip pinepi`, the owned interface address, and the prior `net.ipv4.ip_forward` value are rolled back after partial failure. Stop and identical repeated start requests are idempotent; different settings require an explicit stop first. Startup reconciliation reclaims operation ownership for validated live scanner, capture, and Training AP processes after a FastAPI restart.
+The helper restores the audit adapter to managed mode if scanner/capture startup fails, stop is requested, or startup reconciliation finds stale state. Training AP startup is transactional: hostapd, dnsmasq, PinePi's dedicated `table ip pinepi`, the owned interface address, and the prior `net.ipv4.ip_forward` value are rolled back after partial failure. Stop and identical repeated start requests are idempotent; different settings require an explicit stop first. Startup reconciliation reclaims operation ownership for validated live scanner, capture, and Training AP processes after a FastAPI restart and cleans stale transient wireless state.
 
 Wireless Tools can explicitly enable/disable native `iw` monitor mode without relying on airmon-generated interface names. The UI shows PHY, driver, USB ID, current mode/channel, AP/monitor support, and supported, disabled, no-IR, and DFS channel lists reported by the kernel. PinePi never bypasses the kernel regulatory domain.
 
@@ -257,7 +257,7 @@ This project is suitable only for networks you own or have explicit permission t
 
 **Lab password is unavailable:** access PinePi through the configured Management subnet, not the Training subnet or another routed interface. The credential endpoint intentionally uses the direct connection address and ignores forwarded-client headers. Confirm both Training hostapd and dnsmasq are still running.
 
-**A scan/capture process exited:** open **Logging** and select Recon scanner or Packet capture. Output is limited to the newest 80 lines/16 KiB and credential-like values are redacted. PinePi restores the audit interface to managed mode when it observes the exit; confirm this with `iw dev` before restarting the operation.
+**A scan/capture process exited:** open **Logging** and select Recon scanner or Packet capture. Output is limited to the newest 80 lines/16 KiB and credential-like values are redacted. Press the corresponding Stop action to clean up the stale process state and restore the audit interface to managed mode; confirm this with `iw dev` before restarting the operation.
 
 **An active test is unavailable:** connect through the Management Wi-Fi, select the AP in Recon again, confirm the BSSID/channel, and check authorization. Open Modules to confirm aireplay-ng or MDK4 is installed, then use Adapter Diagnostics to inspect monitor support and `airmon-ng check` conflicts. PinePi does not automatically kill NetworkManager or wpa_supplicant.
 

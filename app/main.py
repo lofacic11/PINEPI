@@ -56,6 +56,8 @@ def normalized_error(message: str, default: str) -> tuple[str, str]:
         return "ADAPTER_BUSY", message
     if "required executable not found" in lowered:
         return "TOOL_MISSING", message
+    if "no wi-fi adapter" in lowered or "no internal non-usb wi-fi adapter" in lowered or "adapter is missing" in lowered:
+        return "ADAPTER_MISSING", message
     if "storage_full" in lowered or "no space" in lowered or "insufficient space" in lowered:
         return "STORAGE_FULL", message
     if "storage_unavailable" in lowered or "state_write_failed" in lowered:

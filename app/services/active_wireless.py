@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from contextlib import suppress
 
 from app.config import AppConfig
 from app.models import DeauthTestRequest, InjectionTestRequest, Mdk4DeauthTestRequest
@@ -167,14 +168,6 @@ class ActiveWirelessService:
             result = state
         else:
             result = await self.helper.call("active-status")
-        if not result.get("running") and self._operation_id:
-            self.operations.finish(
-                self._operation_id,
-                "completed" if not result.get("last_error") else "failed",
-                str(result.get("last_error", "")),
-                result.get("exit_code"),
-            )
-            self._operation_id = None
         result["classification"] = "ACTIVE"
         return result
 
@@ -231,6 +224,9 @@ class ActiveWirelessService:
             monitor = await self.helper.call("monitor-status")
         except Exception:
             return
+        if not active.get("running") and active.get("stored_running"):
+            with suppress(Exception):
+                await self.helper.call("active-stop")
         if active.get("running"):
             self._operation_id = await self.operations.acquire(
                 "DEAUTH_TEST",

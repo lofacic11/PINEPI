@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from app.config import AnalysisConfig, AppConfig, StorageConfig
@@ -79,3 +81,16 @@ def test_frame_explorer_reports_missing_scapy_without_parsing_payload(monkeypatc
     result = analysis.frame_explorer(capture_path.name)
     assert result["status"] == "TOOL_MISSING"
     assert result["items"] == []
+
+
+def test_analysis_preview_stays_valid_when_result_is_large(tmp_path):
+    config = AppConfig(storage=StorageConfig(captures=tmp_path, database=tmp_path / "data.db"))
+    database = Database(config.storage.database)
+    database.initialize()
+    analysis = CaptureAnalysisService(config, CaptureService(config, None, ProcessManager(), database), database, ProcessManager())  # type: ignore[arg-type]
+
+    analysis._store("capture-1.pcapng", "test", {"status": "OK", "large": "x" * 120000})
+
+    row = database.one("SELECT result_json FROM analysis_results")
+    stored = json.loads(row["result_json"])
+    assert stored["status"] == "RESULT_TRUNCATED"

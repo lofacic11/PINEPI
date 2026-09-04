@@ -98,6 +98,7 @@ def test_helper_constructs_fixed_deauthentication_arguments(monkeypatch, capsys)
     commands, saved = [], []
     monkeypatch.setitem(globals_, "validate_interface", lambda value: value)
     monkeypatch.setitem(globals_, "ensure_wireless_operation_idle", lambda: None)
+    monkeypatch.setitem(globals_, "reserve_audit_interface", lambda interface: None)
     monkeypatch.setitem(globals_, "load_state", lambda name: {})
     monkeypatch.setitem(globals_, "set_monitor", lambda interface, channel: None)
     monkeypatch.setitem(globals_, "set_managed", lambda interface: None)
@@ -161,6 +162,7 @@ def test_monitor_lifecycle_uses_native_iw_state_and_is_idempotent(monkeypatch, c
     state, calls = {}, []
     monkeypatch.setitem(globals_, "validate_interface", lambda value: value)
     monkeypatch.setitem(globals_, "ensure_wireless_operation_idle", lambda: None)
+    monkeypatch.setitem(globals_, "reserve_audit_interface", lambda interface: calls.append(("reserve", interface)))
     monkeypatch.setitem(globals_, "load_state", lambda name: state.copy() if name == "monitor" else {})
     monkeypatch.setitem(globals_, "save_state", lambda name, value: state.update(value))
     monkeypatch.setitem(globals_, "set_monitor", lambda interface, channel: calls.append(("monitor", interface, channel)))
@@ -169,9 +171,31 @@ def test_monitor_lifecycle_uses_native_iw_state_and_is_idempotent(monkeypatch, c
     helper["monitor_enable"]("wlan9", "6")
     helper["monitor_disable"]()
     assert calls.count(("monitor", "wlan9", 6)) == 1
+    assert calls.count(("reserve", "wlan9")) == 1
     assert ("managed", "wlan9") in calls
     assert state["running"] is False
     capsys.readouterr()
+
+
+@pytest.mark.asyncio
+async def test_stale_active_test_is_cleaned_up_after_restart():
+    class StaleActiveHelper:
+        def __init__(self):
+            self.actions = []
+
+        async def call(self, action, *_args, **_kwargs):
+            self.actions.append(action)
+            if action == "active-status":
+                return {"running": False, "stored_running": True}
+            if action == "monitor-status":
+                return {"running": False}
+            if action == "active-stop":
+                return {"running": False}
+            raise AssertionError(action)
+
+    helper = StaleActiveHelper()
+    await ActiveWirelessService(AppConfig(), helper, ProcessManager()).reconcile()
+    assert helper.actions == ["active-status", "monitor-status", "active-stop"]
 
 
 def test_airmon_conflict_check_never_kills_processes(monkeypatch, capsys):

@@ -36,3 +36,23 @@ async def test_live_capture_reclaims_adapter_ownership_after_restart(tmp_path):
     await capture.reconcile()
     with pytest.raises(OperationBusy, match="audit_adapter"):
         await operations.acquire("recon", "audit_adapter")
+
+
+@pytest.mark.asyncio
+async def test_stale_capture_is_cleaned_up_after_restart(tmp_path):
+    class StaleCaptureHelper:
+        def __init__(self):
+            self.actions = []
+
+        async def call(self, action, **_kwargs):
+            self.actions.append(action)
+            if action == "capture-status":
+                return {"running": False, "stored_running": True}
+            if action == "capture-stop":
+                return {"running": False}
+            raise AssertionError(action)
+
+    helper = StaleCaptureHelper()
+    config = AppConfig(storage=StorageConfig(scans=tmp_path / "scans", captures=tmp_path))
+    await CaptureService(config, helper, ProcessManager()).reconcile()
+    assert helper.actions == ["capture-status", "capture-stop"]

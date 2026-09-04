@@ -34,6 +34,8 @@ def test_recon_workflow_and_safe_wireless_rendering():
     assert "textContent" in JAVASCRIPT
     assert "eval(" not in JAVASCRIPT
     assert "document.write" not in JAVASCRIPT
+    assert "Stop Recon to restore the adapter" in JAVASCRIPT
+    assert 'session?.status === "running"' in JAVASCRIPT
 
 
 def test_lab_password_is_visible_and_copy_has_http_fallback():

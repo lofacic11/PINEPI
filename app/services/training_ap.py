@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hmac
+from contextlib import suppress
 
 from app.config import AppConfig
 from app.services.adapter_detection import detect_adapters, interface_for_role
@@ -21,6 +22,9 @@ class TrainingAPService:
             return
         if status.get("running"):
             self._operation_id = await self.processes.acquire("training_ap", "training_adapter")
+        elif status.get("stored_running"):
+            with suppress(Exception):
+                await self.helper.call("ap-stop")
 
     async def start(self, ssid: str, password: str, channel: int) -> dict:
         adapters = await detect_adapters(self.config)

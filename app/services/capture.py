@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import re
 import time
+from contextlib import suppress
 from pathlib import Path
 
 from app.config import AppConfig
@@ -36,6 +37,9 @@ class CaptureService:
                 self.processes.attach_pid(self._operation_id, status.get("pid"))
             except Exception:
                 self._operation_id = None
+        elif status.get("stored_running"):
+            with suppress(Exception):
+                await self.helper.call("capture-stop", timeout=25)
 
     async def start(self, channel: int, target: dict | None = None) -> dict:
         if not 1 <= channel <= 196:
@@ -94,9 +98,6 @@ class CaptureService:
             )
             status["handshake_note"] = "Frame count is only an indicator; it does not validate an M1-M4 exchange."
             status["target"] = self._target
-            if not status.get("running") and self._operation_id:
-                self.processes.finish(self._operation_id, "completed")
-                self._operation_id = None
             self._cache = (time.monotonic(), status)
             return status
 

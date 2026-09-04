@@ -1,4 +1,5 @@
 import pytest
+from unittest.mock import AsyncMock
 
 from app.config import AppConfig, ReconConfig, StorageConfig
 from app.services.database import Database, SCHEMA_VERSION
@@ -14,6 +15,32 @@ class NoHelper:
         raise AssertionError("mock Recon must not invoke the root helper")
 
 
+class StartedThenDatabaseFailureHelper:
+    def __init__(self):
+        self.actions = []
+
+    async def call(self, action, *_args, **_kwargs):
+        self.actions.append(action)
+        if action == "scan-start":
+            return {"running": True, "pid": 123, "interface": "wlan2"}
+        if action == "scan-stop":
+            return {"running": False}
+        raise AssertionError(action)
+
+
+class UnexpectedExitHelper:
+    def __init__(self):
+        self.actions = []
+
+    async def call(self, action, *_args, **_kwargs):
+        self.actions.append(action)
+        if action == "scan-status":
+            return {"running": False, "stored_running": True, "healthy": False, "pid": 123, "interface": "wlan2"}
+        if action == "scan-stop":
+            return {"running": False}
+        raise AssertionError(action)
+
+
 def service(tmp_path, *, scenario="normal", samples=3):
     config = AppConfig(
         storage=StorageConfig(scans=tmp_path / "scans", captures=tmp_path / "captures", database=tmp_path / "pinepi.db"),
@@ -23,6 +50,69 @@ def service(tmp_path, *, scenario="normal", samples=3):
     database.initialize()
     operations = ProcessManager(database)
     return ReconService(config, NoHelper(), database, operations), database, operations
+
+
+@pytest.mark.asyncio
+async def test_real_start_rolls_back_helper_when_session_update_fails(tmp_path, monkeypatch):
+    config = AppConfig(storage=StorageConfig(scans=tmp_path / "scans", captures=tmp_path / "captures", database=tmp_path / "pinepi.db"))
+    database = Database(config.storage.database)
+    database.initialize()
+    operations = ProcessManager(database)
+    helper = StartedThenDatabaseFailureHelper()
+    recon = ReconService(config, helper, database, operations)
+    monkeypatch.setattr("app.services.recon.detect_adapters", AsyncMock(return_value=[{"interface": "wlan2", "role": "audit"}]))
+
+    original_execute = database.execute
+
+    def fail_running_update(sql, parameters=()):
+        if sql.startswith("UPDATE scan_sessions SET status='running'"):
+            raise RuntimeError("database update failed")
+        return original_execute(sql, parameters)
+
+    monkeypatch.setattr(database, "execute", fail_running_update)
+    with pytest.raises(RuntimeError, match="database update failed"):
+        await recon.start()
+    assert helper.actions == ["scan-start", "scan-stop"]
+    assert operations.owner("audit_adapter") is None
+
+
+@pytest.mark.asyncio
+async def test_live_status_does_not_mutate_dead_session_and_stop_remains_available(tmp_path):
+    config = AppConfig(storage=StorageConfig(scans=tmp_path / "scans", captures=tmp_path / "captures", database=tmp_path / "pinepi.db"))
+    database = Database(config.storage.database)
+    database.initialize()
+    database.execute(
+        "INSERT INTO scan_sessions(id,started_at,status,audit_interface,monitor_interface,operation_id) VALUES(?,?,?,?,?,?)",
+        ("dead", "2026-01-01T00:00:00+00:00", "running", "wlan2", "wlan2", "operation"),
+    )
+    helper = UnexpectedExitHelper()
+    recon = ReconService(config, helper, database, ProcessManager(database))
+
+    live = await recon.live_status()
+
+    assert live["running"] is False
+    assert live["healthy"] is False
+    assert live["session"]["status"] == "running"
+    assert database.one("SELECT status FROM scan_sessions WHERE id='dead'")["status"] == "running"
+    assert helper.actions == ["scan-status"]
+
+
+@pytest.mark.asyncio
+async def test_reconcile_restores_adapter_after_scanner_exit(tmp_path):
+    config = AppConfig(storage=StorageConfig(scans=tmp_path / "scans", captures=tmp_path / "captures", database=tmp_path / "pinepi.db"))
+    database = Database(config.storage.database)
+    database.initialize()
+    database.execute(
+        "INSERT INTO scan_sessions(id,started_at,status,audit_interface,monitor_interface,operation_id) VALUES(?,?,?,?,?,?)",
+        ("stale", "2026-01-01T00:00:00+00:00", "running", "wlan2", "wlan2", "operation"),
+    )
+    helper = UnexpectedExitHelper()
+    recon = ReconService(config, helper, database, ProcessManager(database))
+
+    await recon.reconcile()
+
+    assert helper.actions == ["scan-status", "scan-stop"]
+    assert database.one("SELECT status FROM scan_sessions WHERE id='stale'")["status"] == "interrupted"
 
 
 def test_database_schema_and_parser_tolerate_malformed_rows(tmp_path):

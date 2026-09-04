@@ -86,3 +86,22 @@ async def test_live_training_ap_reclaims_adapter_ownership_after_restart():
     await service.reconcile()
     with pytest.raises(OperationBusy, match="training_adapter"):
         await operations.acquire("another-training-ap", "training_adapter")
+
+
+@pytest.mark.asyncio
+async def test_stale_training_ap_is_cleaned_up_after_restart():
+    class StaleTrainingHelper:
+        def __init__(self):
+            self.actions = []
+
+        async def call(self, action):
+            self.actions.append(action)
+            if action == "ap-status":
+                return {"running": False, "stored_running": True}
+            if action == "ap-stop":
+                return {"running": False}
+            raise AssertionError(action)
+
+    helper = StaleTrainingHelper()
+    await TrainingAPService(AppConfig(), helper, ProcessManager()).reconcile()
+    assert helper.actions == ["ap-status", "ap-stop"]

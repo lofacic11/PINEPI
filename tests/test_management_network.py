@@ -52,6 +52,8 @@ def test_management_state_is_idempotent_when_both_daemons_are_alive(monkeypatch,
     monkeypatch.setitem(globals_, "RUN_DIR", tmp_path)
     monkeypatch.setitem(globals_, "wait_for_management_interface", lambda: "wlan0")
     monkeypatch.setitem(globals_, "verify_ap_capability", lambda interface: None)
+    monkeypatch.setitem(globals_, "reserve_management_interface", lambda interface: None)
+    monkeypatch.setitem(globals_, "verify_ap_enabled", lambda interface, ssid: None)
     monkeypatch.setitem(globals_, "load_state", lambda name: {"running": True, "hostapd_pid": 1, "dnsmasq_pid": 2, "interface": "wlan0"})
     monkeypatch.setitem(globals_, "process_alive", lambda pid, expected: True)
     monkeypatch.setitem(globals_, "public_ap_state", lambda state, kind: {"running": True, "interface": "wlan0"})
